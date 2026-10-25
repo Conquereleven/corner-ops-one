@@ -1,0 +1,114 @@
+# CornerOps One — continuous integration.
+#
+# Tiers (cost-conscious):
+#   - documentation-only changes do not run CI at all (paths-ignore);
+#   - every code change runs "static" (typecheck, lint, unit tests, production build);
+#   - every change to database, server, domain, tests or dependencies runs
+#     "database" (migrations + integration/security suite on a throwaway
+#     Postgres 17 service). It is a required check for those paths.
+# No deployments, no secrets, read-only token, superseded runs are cancelled.
+
+name: CI
+
+on:
+  pull_request:
+    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+  push:
+    branches: ["main", "feat/**", "fix/**"]
+    paths-ignore: ["**/*.md", "docs/**", "LICENSE"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  VITE_CONFIG_NATIVE_IGNORE_WARNING: "true"
+
+jobs:
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      database: ${{ steps.diff.outputs.database }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        name: Classify changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Manual runs, new branches and unknown bases run everything.
+          if [ "$EVENT" = "workflow_dispatch" ] || [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            echo "database=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git diff --name-only "$BASE_SHA" HEAD | grep -qE '^(supabase/|scripts/db/|src/server/|src/domain/|src/adapters/|tests/|vitest\.config\.ts|package(-lock)?\.json|\.github/workflows/)'; then
+            echo "database=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "database=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  static:
+    name: Typecheck, lint, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:unit
+      - name: Production build
+        run: npm run build
+        env:
+          APP_ENV: test
+          APP_MODE: demo
+
+  database:
+    name: Migrations and database security suite
+    needs: changes
+    if: needs.changes.outputs.database == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          LC_ALL: C.UTF-8
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Throwaway service database on loopback; the suite's guard accepts only
+      # cornerops_test* names on local hosts with this flag set.
+      TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/cornerops_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Integration and security tests (disposable database)
+        run: npm run test:integration
