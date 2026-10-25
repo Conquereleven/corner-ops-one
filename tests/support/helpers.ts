@@ -69,3 +69,17 @@ export async function freshDemoOrder(locationId = "loc_marina", channel: "talaba
   if (!res.order) throw new Error(`could not create demo order: ${JSON.stringify(res)}`);
   return res.order;
 }
+
+/**
+ * Affected-row count of an unauthorized write attempt, treating "permission
+ * denied" (403) as zero rows. Any other error is re-thrown. Callers must still
+ * verify the target data is unchanged.
+ */
+export async function rowsOrDenied(attempt: () => Promise<number>): Promise<number> {
+  try {
+    return await attempt();
+  } catch (err) {
+    if ((err as { status?: number }).status === 403) return 0;
+    throw err;
+  }
+}

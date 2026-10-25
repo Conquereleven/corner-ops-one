@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { search } from "@/server/services/search";
-import { asUser, memberOf, rawAs, createUser, system } from "../support/helpers";
+import { asUser, memberOf, rawAs, createUser, rowsOrDenied, system } from "../support/helpers";
 import { ORG_A, ORG_B } from "../support/fixtures";
 
 const TABLES = [
@@ -44,8 +44,12 @@ describe("tenant isolation (RLS)", () => {
 
   it("Organization A cannot write into Organization B", async () => {
     const a = await memberOf(ORG_A, "writer-a", "OWNER");
-    const updated = await rawAs(a, async (db) => (await db`update public.orders set notes = 'x' where organization_id = ${ORG_B} returning id`).length);
+    // Since v0.2.1 clients have no UPDATE privilege on orders at all: either outcome
+    // (permission denied, or zero rows under RLS) must leave Organization B untouched.
+    const updated = await rowsOrDenied(() => rawAs(a, async (db) => (await db`update public.orders set notes = 'x' where organization_id = ${ORG_B} returning id`).length));
     expect(updated).toBe(0);
+    const [b] = await system((db) => db`select count(*)::int n from public.orders where organization_id = ${ORG_B} and notes = 'x'`);
+    expect(b.n).toBe(0);
     await expect(
       rawAs(a, (db) => db`insert into public.domain_events (organization_id, type, aggregate_type, aggregate_id, actor_user_id) values (${ORG_B}, 'order.accepted', 'order', 'x', ${a.id})`),
     ).rejects.toMatchObject({ status: 403 });

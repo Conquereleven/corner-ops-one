@@ -4,7 +4,11 @@
  * application layer. Each test encodes the required secure behavior.
  */
 import { describe, expect, it } from "vitest";
-import { freshDemoOrder, memberOf, rawAs, system } from "../support/helpers";
+import { getAnalytics } from "@/server/services/analytics";
+import { getInventory } from "@/server/services/inventory";
+import { getMenu } from "@/server/services/menu";
+import { getSettings } from "@/server/services/settings";
+import { asUser, freshDemoOrder, memberOf, rawAs, system } from "../support/helpers";
 import { ORG_A, ORG_B } from "../support/fixtures";
 
 const MARINA = "loc_marina";
@@ -98,10 +102,80 @@ describe("financial and cost information", () => {
     expect(res.ok).toBe(false);
   });
 
+  it("platform commission is readable only through the finance function, for finance roles", async () => {
+    const order = await freshDemoOrder(MARINA);
+    const bm = await memberOf(ORG_A, "adv-bm-fee", "BRANCH_MANAGER", [MARINA]);
+    const ops = await memberOf(ORG_A, "adv-ops-fee", "OPERATIONS_MANAGER");
+    await expect(rawAs(bm, (db) => db`select * from public.financial_order_fees(${ORG_A}, ${[order.id]})`)).rejects.toMatchObject({ status: 403 });
+    await expect(rawAs(ops, (db) => db`select platform_fee from orders where id = ${order.id}`)).rejects.toMatchObject({ status: 403 });
+    const rows = await rawAs(ops, (db) => db`select * from public.financial_order_fees(${ORG_A}, ${[order.id]})`);
+    expect(rows.length).toBe(1);
+  });
+
+  it("channel credential references are not readable by any client role", async () => {
+    const owner = await memberOf(ORG_A, "adv-owner-cred", "OWNER");
+    await expect(rawAs(owner, (db) => db`select credential_reference from channel_connections limit 1`)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("finance roles of one organization cannot read another organization's costs", async () => {
+    const ownerA = await memberOf(ORG_A, "adv-owner-a-costs", "OWNER");
+    await expect(rawAs(ownerA, (db) => db`select * from public.financial_menu_costs(${ORG_B})`)).rejects.toMatchObject({ status: 403 });
+    await expect(rawAs(ownerA, (db) => db`select public.financial_economics(${ORG_B})`)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("the application returns no cost data to branch managers, and full data to operations managers", async () => {
+    const bm = await memberOf(ORG_A, "adv-bm-app-fin", "BRANCH_MANAGER", [MARINA]);
+    const ops = await memberOf(ORG_A, "adv-ops-app-fin", "OPERATIONS_MANAGER");
+    const view = (u: typeof bm) =>
+      asUser(u, async (ctx) => ({
+        menu: await getMenu(ctx),
+        inventory: await getInventory(ctx),
+        settings: await getSettings(ctx),
+        analytics: await getAnalytics(ctx, "7d"),
+        orders: await ctx.data.orders({ from: Date.now() - 86_400_000, to: Date.now() + 1 }),
+      }));
+    const b = await view(bm);
+    expect(b.menu.items.every((i) => i.foodCost === undefined && i.foodCostPct === undefined)).toBe(true);
+    expect(b.inventory.items.every((i) => i.unitCost === undefined)).toBe(true);
+    expect(b.inventory.stockValue).toBeNull();
+    expect(b.settings.settings.economics).toBeNull();
+    expect(b.analytics.profitability).toBeNull();
+    expect(b.analytics.topProducts.every((p) => p.marginPct === undefined)).toBe(true);
+    expect(b.orders.every((o) => o.platformFee === undefined)).toBe(true);
+
+    const o = await view(ops);
+    expect(o.menu.items.every((i) => typeof i.foodCost === "number")).toBe(true);
+    expect(o.inventory.stockValue).toBeGreaterThan(0);
+    expect(o.settings.settings.economics).not.toBeNull();
+    expect(o.analytics.profitability).not.toBeNull();
+    expect(o.orders.some((x) => x.platformFee !== undefined)).toBe(true);
+  });
+
   it("owners read costs through the financial functions", async () => {
     const owner = await memberOf(ORG_A, "adv-owner-costs", "OWNER");
     const rows = await rawAs(owner, (db) => db`select * from public.financial_menu_costs(${ORG_A})`);
     expect(rows.length).toBeGreaterThan(20);
+  });
+});
+
+describe("audit cannot be suppressed or bypassed by clients", () => {
+  it("setting the audit-suspension or guard flags from a client session has no effect", async () => {
+    const owner = await memberOf(ORG_B, "adv-owner-b-suspend", "OWNER");
+    const before = await system(async (db) => (await db`select count(*)::int n from audit_logs where organization_id = ${ORG_B} and action = 'settings.updated'`)[0].n);
+    await rawAs(owner, async (db) => {
+      await db`select set_config('cornerops.audit_suspended', 'on', true)`;
+      await db`update organization_settings set sla = sla || '{"warningRatio": 0.7}'::jsonb where organization_id = ${ORG_B}`;
+    });
+    const after = await system(async (db) => (await db`select count(*)::int n from audit_logs where organization_id = ${ORG_B} and action = 'settings.updated'`)[0].n);
+    expect(after).toBe(before + 1);
+  });
+
+  it("anon has no table or function access", async () => {
+    const res = await attempt(() => system(async (db) => {
+      await db`set local role anon`;
+      return db`select public.demo_feed(${ORG_A}, 5)`;
+    }));
+    expect(res.ok).toBe(false);
   });
 });
 
@@ -185,6 +259,21 @@ describe("demo workspace isolation at the database", () => {
     await attempt(() => rawAs(demo, (db) => db`update organizations set is_demo = false where id = ${ORG_A}`));
     const rows = await system((db) => db`select id, is_demo from organizations where id in (${ORG_A}, ${ORG_B}) order by id`);
     expect(Object.fromEntries(rows.map((r) => [r.id, r.is_demo]))).toEqual({ [ORG_B]: false, [ORG_A]: true });
+  });
+
+  it("even a trusted server connection cannot give the demo identity a production membership", async () => {
+    const demo = await demoUser();
+    const res = await attempt(() => system((db) => db`insert into organization_memberships (organization_id, user_id, role, status) values (${ORG_B}, ${demo.id}, 'ADMIN', 'active')`));
+    expect(res.ok).toBe(false);
+  });
+
+  it("demo admins cannot change roles or remove members of the demo organization with SQL", async () => {
+    const demo = await demoUser();
+    const target = await memberOf(ORG_A, "adv-demo-target", "KITCHEN_STAFF", [MARINA]);
+    await attempt(() => rawAs(demo, (db) => db`update organization_memberships set role = 'ADMIN' where organization_id = ${ORG_A} and user_id = ${target.id}`));
+    await attempt(() => rawAs(demo, (db) => db`delete from organization_memberships where organization_id = ${ORG_A} and user_id = ${target.id}`));
+    const [m] = await system((db) => db`select role from organization_memberships where organization_id = ${ORG_A} and user_id = ${target.id}`);
+    expect(m.role).toBe("KITCHEN_STAFF");
   });
 
   it("demo admins cannot add members to the demo organization with SQL", async () => {

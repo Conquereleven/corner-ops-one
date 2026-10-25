@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assignableRoles, can, isLocationRestricted, ROLES } from "@/domain/auth/permissions";
-import { applyTransition, availableActions } from "@/domain/orders/state-machine";
+import { applyTransition, availableActions, blockedByShortfall } from "@/domain/orders/state-machine";
 import type { UnifiedOrder } from "@/domain/orders/types";
 import { redact } from "@/server/repositories/audit";
 import { resolveScope } from "@/server/context/app-context";
@@ -41,6 +41,13 @@ describe("order state machine", () => {
   });
   it("rejects invalid transitions", () => {
     expect(() => applyTransition(order, "mark_picked_up", "x")).toThrow();
+  });
+  it("an open inventory shortfall blocks ready / picked up / complete (also for the simulator), not preparation or cancellation", () => {
+    const short = { ...order, status: "preparing", inventoryShortfall: "open" } as UnifiedOrder;
+    expect(availableActions(short)).toEqual(["cancel"]);
+    expect(blockedByShortfall(short, "mark_ready")).toBe(true);
+    expect(blockedByShortfall(short, "start_preparing")).toBe(false);
+    expect(availableActions({ ...short, inventoryShortfall: "resolved" })).toContain("mark_ready");
   });
 });
 

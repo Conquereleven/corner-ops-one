@@ -3,7 +3,7 @@ import { withUserTransaction } from "@/server/db/transaction";
 import { resolveIdentity } from "@/server/context/app-context";
 import { injectDemoOrder, tickDemoWorkspace } from "@/server/demo/simulation";
 import { resetDemoWorkspace } from "@/server/demo/workspace";
-import { runDemoAction } from "@/server/services/settings";
+import { authorizeDemoAction } from "@/server/services/settings";
 import { getTeam, inviteMember, updateMember } from "@/server/services/team";
 import { asUser, createUser, memberOf, system } from "../support/helpers";
 import { ORG_A, ORG_B } from "../support/fixtures";
@@ -24,8 +24,8 @@ describe("demo isolation", () => {
 
   it("production organizations cannot use demo actions", async () => {
     const owner = await memberOf(ORG_B, "owner-b-demo", "OWNER");
-    await expect(asUser(owner, (ctx) => runDemoAction(ctx, { action: "inject", channel: "talabat" }))).rejects.toMatchObject({ status: 403 });
-    await expect(asUser(owner, (ctx) => runDemoAction(ctx, { action: "reset", confirm: "RESET" }))).rejects.toMatchObject({ status: 403 });
+    await expect(asUser(owner, async (ctx) => authorizeDemoAction(ctx, { action: "inject", channel: "talabat" }))).rejects.toMatchObject({ status: 403 });
+    await expect(asUser(owner, async (ctx) => authorizeDemoAction(ctx, { action: "reset", confirm: "RESET" }))).rejects.toMatchObject({ status: 403 });
   });
 
   it("reset restores the demo to its seeded state and leaves other tenants untouched", async () => {
@@ -38,6 +38,18 @@ describe("demo isolation", () => {
     expect(await count(ORG_B)).toBe(bBefore);
     const [ev] = await system((db) => db`select type from domain_events where organization_id = ${ORG_A} and type = 'demo.reset'`);
     expect(ev.type).toBe("demo.reset");
+  });
+
+  it("reset keeps every other member's role and location grants (nobody is promoted)", async () => {
+    const bm = await memberOf(ORG_A, "demo-bm-reset", "BRANCH_MANAGER", ["loc_jvc"]);
+    const cook = await memberOf(ORG_A, "demo-cook-reset", "KITCHEN_STAFF", ["loc_marina"]);
+    await resetDemoWorkspace({ kind: "system", label: "test" });
+    const rows = await system((db) => db`
+      select m.user_id, m.role, array(select ml.location_id from membership_locations ml where ml.membership_id = m.id order by 1) as locs
+      from organization_memberships m where m.organization_id = ${ORG_A} and m.user_id = any(${[bm.id, cook.id]})`);
+    const byUser = Object.fromEntries(rows.map((r) => [r.user_id, { role: r.role, locs: r.locs }]));
+    expect(byUser[bm.id]).toEqual({ role: "BRANCH_MANAGER", locs: ["loc_jvc"] });
+    expect(byUser[cook.id]).toEqual({ role: "KITCHEN_STAFF", locs: ["loc_marina"] });
   });
 });
 

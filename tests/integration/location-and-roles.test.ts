@@ -5,7 +5,7 @@ import { getInventory, recordMovement } from "@/server/services/inventory";
 import { getOrder, listOrders, performOrderAction } from "@/server/services/orders";
 import { updateSettings } from "@/server/services/settings";
 import { inviteMember } from "@/server/services/team";
-import { asUser, freshDemoOrder, memberOf, rawAs, system } from "../support/helpers";
+import { asUser, freshDemoOrder, memberOf, rawAs, rowsOrDenied, system } from "../support/helpers";
 import { ORG_A } from "../support/fixtures";
 
 const MARINA = "loc_marina";
@@ -40,8 +40,11 @@ describe("location-scoped access", () => {
     const foreign = await orderAt(BBAY, ["new", "accepted", "preparing", "ready", "completed"]);
     await expect(asUser(bm, (ctx) => getOrder(ctx, foreign))).rejects.toMatchObject({ status: 404 });
     await expect(asUser(bm, (ctx) => performOrderAction(ctx, foreign, { action: "cancel", reason: "x" }))).rejects.toMatchObject({ status: 404 });
-    const touched = await rawAs(bm, async (db) => (await db`update orders set notes = 'hijack' where id = ${foreign} returning id`).length);
+    // Permission denied (no UPDATE privilege since v0.2.1) or zero rows under RLS — never a modification.
+    const touched = await rowsOrDenied(() => rawAs(bm, async (db) => (await db`update orders set notes = 'hijack' where id = ${foreign} returning id`).length));
     expect(touched).toBe(0);
+    const [row] = await system((db) => db`select notes from orders where id = ${foreign}`);
+    expect(row.notes).not.toBe("hijack");
   });
 
   it("inventory is limited to assigned branches and adjustments elsewhere are refused", async () => {
