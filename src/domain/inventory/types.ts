@@ -14,7 +14,8 @@ export interface InventoryItem {
   quantity: number;
   threshold: number;
   parLevel: number;
-  unitCost: number;
+  /** Finance-only; undefined for roles without profitability access. */
+  unitCost?: number;
   supplier: string;
   createdAt: string;
   updatedAt: string;
@@ -38,6 +39,10 @@ export interface InventoryMovement {
   /** 'user', 'system', 'simulator' or a seed label. */
   actorLabel: string;
   reason?: string;
+  /** Recipe demand for order usage (may exceed the deducted quantity). */
+  requestedQuantity?: number;
+  /** Demand that could not be met from stock (never invented as negative stock). */
+  shortfallQuantity?: number;
   createdAt: string;
   updatedAt: string;
 }

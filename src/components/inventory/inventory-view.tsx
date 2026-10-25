@@ -77,7 +77,7 @@ export function InventoryView() {
         <KpiCard label="Critical" value={<span className={data.counts.critical ? "text-orange-700" : ""}>{data.counts.critical}</span>} hint="≤ 50% of threshold" />
         <KpiCard label="Out of stock" value={<span className={data.counts.out ? "text-red-600" : ""}>{data.counts.out}</span>} hint="blocking items" />
         <KpiCard label="Menu items unavailable" value={data.unavailableMenuItems.length} hint="due to stock" />
-        <KpiCard label="Stock value" value={formatAED(data.stockValue)} hint="at unit cost" />
+        {data.stockValue !== null ? <KpiCard label="Stock value" value={formatAED(data.stockValue)} hint="at unit cost" /> : null}
       </div>
 
       {data.unavailableMenuItems.length ? (

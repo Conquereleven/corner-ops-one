@@ -27,12 +27,17 @@ const mapConnection = (r: Record<string, unknown>): ChannelConnection => ({
   updatedAt: str(r.updated_at),
 });
 
+/** credential_reference is never read by the web tier (column privileges hide it from clients). */
+const CONNECTION_COLUMNS = ["id", "organization_id", "location_id", "channel_id", "external_store_id", "status", "mode", "latency_ms",
+  "last_sync_at", "error_count", "message", "created_at", "updated_at"].join(", ");
+
 export function createChannelRepository(db: Db, organizationId: string): ChannelRepository {
+  const cols = db.unsafe(CONNECTION_COLUMNS);
   return {
     async connections(locationIds) {
       const rows = locationIds
-        ? await db`select * from public.channel_connections where organization_id = ${organizationId} and location_id = any(${locationIds}) order by channel_id, location_id`
-        : await db`select * from public.channel_connections where organization_id = ${organizationId} order by channel_id, location_id`;
+        ? await db`select ${cols} from public.channel_connections where organization_id = ${organizationId} and location_id = any(${locationIds}) order by channel_id, location_id`
+        : await db`select ${cols} from public.channel_connections where organization_id = ${organizationId} order by channel_id, location_id`;
       return rows.map(mapConnection);
     },
     async updateConnection(c) {

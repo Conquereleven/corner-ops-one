@@ -1,14 +1,17 @@
 "use client";
 
-import { Bike, Check, CircleAlert, Clock, CreditCard, Phone, ShoppingBag, Store, User } from "lucide-react";
+import { Bike, Check, CircleAlert, Clock, CreditCard, Phone, ShoppingBag, Store, TriangleAlert, User } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 import { ChannelBadge } from "@/components/shared/channel-badge";
 import { OrderStatusBadge, SlaBadge } from "@/components/shared/status";
 import { ErrorState } from "@/components/shared/states";
 import { ElapsedTimer, RelativeTime } from "@/components/shared/time";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PAYMENT_METHOD_LABEL, netSales, type UnifiedOrder } from "@/domain/orders/types";
-import { useLocationName, useOrder } from "@/hooks/queries";
+import { Textarea } from "@/components/ui/textarea";
+import { PAYMENT_METHOD_LABEL, netSales, type OrderShortfallLine, type UnifiedOrder } from "@/domain/orders/types";
+import { useLocationName, useOrder, useResolveShortfall } from "@/hooks/queries";
 import { CHANNEL_THEME } from "@/lib/channel-theme";
 import { formatAED, formatClock, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -43,8 +46,57 @@ export function OrderDetail({ orderId, compact }: { orderId: string; compact?: b
     );
   }
   if (error || !data) return <ErrorState error={error} onRetry={() => refetch()} />;
-  const { order, customer, channelLogs, sla } = data;
-  return <OrderDetailBody order={order} customer={customer} logs={channelLogs} sla={sla} locationName={locationName(order.locationId)} compact={compact} />;
+  const { order, customer, channelLogs, sla, shortfalls, canResolveShortfall } = data;
+  return (
+    <div className="space-y-4">
+      {shortfalls.length ? <ShortfallPanel orderId={order.id} lines={shortfalls} canResolve={canResolveShortfall} /> : null}
+      <OrderDetailBody order={order} customer={customer} logs={channelLogs} sla={sla} locationName={locationName(order.locationId)} compact={compact} />
+    </div>
+  );
+}
+
+function ShortfallPanel({ orderId, lines, canResolve }: { orderId: string; lines: OrderShortfallLine[]; canResolve: boolean }) {
+  const resolve = useResolveShortfall();
+  const [note, setNote] = useState("");
+  const open = lines.filter((l) => l.status === "open");
+  const qty = (v: number, unit?: string) => `${Math.round(v * 1000) / 1000}${unit ? ` ${unit}` : ""}`;
+  return (
+    <section className={cn("rounded-lg border px-3 py-2.5 text-sm", open.length ? "border-red-300 bg-red-50/70" : "bg-muted/30")}>
+      <div className="flex items-center gap-2 font-semibold">
+        <TriangleAlert className={cn("size-4", open.length ? "text-red-600" : "text-muted-foreground")} />
+        {open.length ? "Inventory shortfall — fulfilment blocked" : "Inventory shortfall resolved"}
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Only stock on hand was deducted when the order was accepted; nothing went negative. Resolving is a manager decision and is recorded in the audit log.
+      </p>
+      <ul className="mt-2 divide-y rounded-md border bg-card">
+        {lines.map((l) => (
+          <li key={l.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 text-xs">
+            <span className="font-medium">{l.ingredientKey.replace(/_/g, " ")}{l.inventoryItemId ? "" : " (not stocked here)"}</span>
+            <span className="tabular text-muted-foreground">
+              needed {qty(l.requestedQuantity, l.unit)} · used {qty(l.consumedQuantity, l.unit)} · short {qty(l.unmetQuantity, l.unit)}
+            </span>
+            <span className={cn("font-medium", l.status === "open" ? "text-red-700" : "text-emerald-700")}>
+              {l.status === "open" ? "open" : l.resolution === "reconciled_from_stock" ? "reconciled" : "accepted"}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {open.length && canResolve ? (
+        <div className="mt-2 space-y-2">
+          <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={300} placeholder="Note (required to accept the shortfall): substitution, omitted ingredient, comp…" className="min-h-14 bg-card text-xs" />
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" className="bg-card" disabled={resolve.isPending} onClick={() => resolve.mutate({ orderId, method: "reconcile_from_stock", note: note || undefined })}>
+              Deduct from current stock
+            </Button>
+            <Button size="sm" variant="outline" className="bg-card" disabled={resolve.isPending || !note.trim()} onClick={() => resolve.mutate({ orderId, method: "accept_shortfall", note })}>
+              Accept shortfall
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function OrderDetailBody({

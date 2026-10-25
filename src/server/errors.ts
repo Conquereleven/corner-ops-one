@@ -48,17 +48,22 @@ export class ConfigurationError extends AppError {
 
 /** Translate Postgres / driver errors into application errors. */
 export function fromDatabaseError(err: unknown): AppError | null {
-  const e = err as { code?: string; errno?: string; message?: string };
+  const e = err as { code?: string; errno?: string; message?: string; where?: string; constraint_name?: string };
+  // Business-rule refusals raised by CornerOps' own database operations carry a
+  // user-facing message (constraint violations and driver errors never do).
+  const ownMessage = !e?.constraint_name && e?.where?.includes("PL/pgSQL function") && e.message ? e.message.charAt(0).toUpperCase() + e.message.slice(1) + (e.message.endsWith(".") ? "" : ".") : null;
   switch (e?.code) {
     case "23505":
       return new ConflictError("That record already exists.");
     case "23503":
       return new ConflictError("This change references a record that doesn't exist.");
     case "23514":
+    case "22023":
+      return new ConflictError(ownMessage ?? "That update isn't valid.");
     case "22P02":
       return new ConflictError("That update isn't valid.");
     case "42501":
-      return new ForbiddenError();
+      return ownMessage ? new ForbiddenError(ownMessage) : new ForbiddenError();
     case "P0002":
       return new NotFoundError();
     case "ECONNREFUSED":

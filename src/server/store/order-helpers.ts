@@ -10,8 +10,9 @@ import type { Database } from "./types";
 /** Enrich a freshly normalized order with CornerOps-side knowledge. */
 export function finalizeIngestedOrder(db: Database, order: UnifiedOrder): UnifiedOrder {
   linkCustomer(db, order);
-  if (order.platformFee === undefined && CHANNEL_CATALOG[order.channel].kind === "marketplace") {
-    const rate = db.settings.economics[order.channel].commissionRate;
+  const economics = db.settings.economics;
+  if (order.platformFee === undefined && economics && CHANNEL_CATALOG[order.channel].kind === "marketplace") {
+    const rate = economics[order.channel].commissionRate;
     order.platformFee = round2(rate * (order.subtotal - order.discount));
     order.metadata = { ...order.metadata, platformFeeEstimated: true };
   }

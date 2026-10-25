@@ -25,6 +25,8 @@ export interface AlertInputs {
   connections: ChannelConnection[];
   mappings: MenuChannelMapping[];
   sla: SlaSettings;
+  /** Active orders whose recipe stock could not be fully consumed (unresolved shortfall). */
+  shortfallOrders?: UnifiedOrder[];
 }
 
 type DraftAlert = Omit<OperationalAlert, "createdAt">;
@@ -58,6 +60,21 @@ export function computeAlerts(input: AlertInputs): DraftAlert[] {
       title: status === "out" ? `${item.name} out of stock` : `${item.name} ${status === "low" ? "below threshold" : "critically low"}`,
       detail: `${locName(item.locationId)}: ${fmtQty(item.quantity, item.unit)} left (threshold ${fmtQty(item.threshold, item.unit)}). Used in ${names || "no menu items"}${more}.${runout}`,
       href: `/inventory?item=${item.id}`,
+    });
+  }
+
+  // Inventory shortfalls: fulfilment is blocked until a manager resolves them ---------
+  for (const o of input.shortfallOrders ?? []) {
+    alerts.push({
+      id: `shortfall:${o.id}`,
+      organizationId: org,
+      locationId: o.locationId,
+      channel: o.channel,
+      severity: "critical",
+      category: "inventory",
+      title: `Stock shortfall on ${o.orderNumber}`,
+      detail: `${locName(o.locationId)}: recipe stock ran short when the order was accepted. It can't be marked ready until a manager resolves the shortfall.`,
+      href: `/orders/${o.id}`,
     });
   }
 

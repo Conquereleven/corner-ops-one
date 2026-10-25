@@ -97,12 +97,29 @@ export interface UnifiedOrder {
 
   /** Status of the last write-back to the originating channel. */
   syncStatus: SyncStatus;
+  /** Recipe stock that could not be consumed on acceptance; "open" blocks fulfilment until resolved. */
+  inventoryShortfall?: "open" | "resolved";
   /** "mock" orders were produced by a simulated integration. */
   source: "mock" | "live" | "seed";
 
   createdAt: string;
   updatedAt: string;
   metadata?: Record<string, unknown>;
+}
+
+/** One ingredient's unmet recipe demand for an accepted order. */
+export interface OrderShortfallLine {
+  id: string;
+  inventoryItemId?: string;
+  ingredientKey: string;
+  unit?: string;
+  requestedQuantity: number;
+  consumedQuantity: number;
+  unmetQuantity: number;
+  status: "open" | "resolved";
+  resolution?: "reconciled_from_stock" | "accepted_shortfall";
+  resolutionNote?: string;
+  resolvedAt?: string;
 }
 
 export const ORDER_STATUS_LABEL: Record<OrderStatus, string> = {

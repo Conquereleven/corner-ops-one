@@ -3,12 +3,15 @@ import type { WorkspaceSettings } from "../store/types";
 import type { Db } from "../db/client";
 import { hhmm, newId, num, optStr, str } from "./mappers";
 
+export type SettingsSection = "sla" | "economics" | "demo";
+
 export interface OrganizationRepository {
   get(): Promise<Organization>;
   restaurant(): Promise<Restaurant>;
   update(patch: { name?: string; legalName?: string | null }): Promise<Organization>;
   settings(): Promise<WorkspaceSettings>;
-  updateSettings(next: WorkspaceSettings): Promise<void>;
+  /** Writes only the given sections (column privileges allow sla, economics, demo). */
+  updateSettings(next: WorkspaceSettings, sections: SettingsSection[]): Promise<void>;
 }
 
 export interface LocationRepository {
@@ -45,7 +48,7 @@ export const mapLocation = (r: Record<string, unknown>): Location => ({
   updatedAt: str(r.updated_at),
 });
 
-export function createOrganizationRepository(db: Db, organizationId: string): OrganizationRepository {
+export function createOrganizationRepository(db: Db, organizationId: string, opts: { financials?: boolean } = {}): OrganizationRepository {
   return {
     async get() {
       const [r] = await db`select * from public.organizations where id = ${organizationId}`;
@@ -72,19 +75,22 @@ export function createOrganizationRepository(db: Db, organizationId: string): Or
       return mapOrganization(rows[0]);
     },
     async settings() {
-      const [r] = await db`select * from public.organization_settings where organization_id = ${organizationId}`;
+      const [r] = await db`select sla, demo from public.organization_settings where organization_id = ${organizationId}`;
       if (!r) throw Object.assign(new Error("settings not found"), { code: "P0002" });
+      const economics = opts.financials ? (await db`select public.financial_economics(${organizationId}) as e`)[0].e : null;
       return {
         sla: r.sla as WorkspaceSettings["sla"],
-        economics: r.economics as WorkspaceSettings["economics"],
+        economics: (economics as WorkspaceSettings["economics"]) ?? null,
         demo: r.demo as WorkspaceSettings["demo"],
         aiProvider: "deterministic",
       };
     },
-    async updateSettings(next) {
+    async updateSettings(next, sections) {
+      const values: Record<string, unknown> = {};
+      for (const s of sections) if (next[s] !== null) values[s] = db.json(next[s] as never);
+      if (!Object.keys(values).length) return;
       const rows = await db`
-        update public.organization_settings set sla = ${db.json(next.sla as never)}, economics = ${db.json(next.economics as never)},
-          demo = ${db.json(next.demo as never)}
+        update public.organization_settings set ${db(values)}
         where organization_id = ${organizationId} returning organization_id`;
       if (!rows.length) throw Object.assign(new Error("settings not updated"), { code: "42501" });
     },

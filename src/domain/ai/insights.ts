@@ -91,7 +91,7 @@ export function buildBriefing(s: OperationsSnapshot): OperationsBriefing {
     opportunities.push({
       id: "top-product",
       tone: "neutral",
-      text: `${topProduct.name} is the top seller this week (${topProduct.quantity} sold, ${topProduct.marginPct.toFixed(0)}% food margin). Feature it in marketplace hero slots.`,
+      text: `${topProduct.name} is the top seller this week (${topProduct.quantity} sold${topProduct.marginPct !== undefined ? `, ${topProduct.marginPct.toFixed(0)}% food margin` : ""}). Feature it in marketplace hero slots.`,
       href: "/analytics",
     });
   }

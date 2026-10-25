@@ -1,5 +1,5 @@
 import { MARKETPLACE_CHANNELS, channelName, type OrderChannel } from "@/domain/channels/types";
-import type { OrderAction } from "@/domain/orders/state-machine";
+import { blockedByShortfall, type OrderAction } from "@/domain/orders/state-machine";
 import type { UnifiedOrder } from "@/domain/orders/types";
 import { createRng, type Rng } from "@/lib/rng";
 import { MINUTE, iso, toMs } from "@/lib/time";
@@ -138,6 +138,7 @@ function emit(world: World, runtime: ChannelRuntime, rng: Rng, now: number, opts
   if (!channel) return null;
   if (!runtime.backend.connections.some((c) => c.channel === channel && c.locationId === locationId)) return null;
   const spec = buildOrderSpec(world.db, rng, { locationId, channel, placedAt: now });
+  if (!spec) return null; // nothing sellable at this location right now
   runtime.adapters[channel].emitOrder(spec);
   return { channel, locationId };
 }
@@ -174,7 +175,7 @@ async function runTick(db: Db, orgId: string, now: number, force: boolean, injec
   if (!state) return { created: [] as UnifiedOrder[] };
   if (!force && now - state.lastTickAt < MIN_TICK_MS) return { created: [] as UnifiedOrder[] };
 
-  const repos = createRepositories(db, orgId);
+  const repos = createRepositories(db, orgId, { financials: true });
   const rng = createRng((now ^ state.externalSequence) >>> 0);
   const runtime = await loadChannelRuntime(repos, { inboxes: state.inboxes, rng: rng.next });
   const world = await loadWorld(repos, runtime, state);
@@ -204,7 +205,7 @@ async function runTick(db: Db, orgId: string, now: number, force: boolean, injec
     // Presenter-injected orders are never auto-progressed by the simulator.
     for (const o of created.filter((x) => x.channel === injected!.channel && x.locationId === injected!.locationId)) {
       o.metadata = { ...o.metadata, demoHold: true };
-      await db`update public.orders set metadata = ${db.json(o.metadata as never)} where id = ${o.id}`;
+      await repos.orders.setMetadata(o.id, o.metadata);
     }
   }
 
@@ -217,7 +218,8 @@ async function runTick(db: Db, orgId: string, now: number, force: boolean, injec
     });
     for (const order of candidates) {
       const action = nextAutoAction(order, now, demo.autoProgress);
-      if (!action) continue;
+      // An unresolved inventory shortfall waits for a person; the simulator never resolves it.
+      if (!action || blockedByShortfall(order, action)) continue;
       const res = await transitionOrder({ repos, actor: SIMULATOR, channels: runtime, mode: "system", rng: rng.next }, order.id, action, { at: now });
       if (action === "accept" || action === "mark_ready") feed(state, "status_change", `${res.order.orderNumber} → ${res.order.status.replace("_", " ")}`, now);
     }
@@ -263,10 +265,11 @@ export async function injectDemoOrder(orgId: string, opts: { channel?: OrderChan
   });
 }
 
-/** Recent simulation feed for the Demo mode panel (read-only). */
-export async function getDemoFeed(orgId: string, limit = 25): Promise<SimulationEvent[]> {
-  return withSystemTransaction(async (db) => {
-    const [r] = await db`select d.events from public.demo_workspace_state d join public.organizations o on o.id = d.organization_id where d.organization_id = ${orgId} and o.is_demo`;
-    return ((r?.events as SimulationEvent[]) ?? []).slice(-limit).reverse();
-  });
+/**
+ * Recent simulation feed for the Demo mode panel (read-only, newest first).
+ * Runs on the caller's connection/transaction — `demo_feed` checks membership.
+ */
+export async function getDemoFeed(orgId: string, limit: number, db: Db): Promise<SimulationEvent[]> {
+  const [r] = await db`select public.demo_feed(${orgId}, ${limit}) as events`;
+  return (r?.events as SimulationEvent[]) ?? [];
 }

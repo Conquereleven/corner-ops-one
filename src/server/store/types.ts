@@ -22,7 +22,8 @@ export interface DemoSettings {
 
 export interface WorkspaceSettings {
   sla: SlaSettings;
-  economics: Record<OrderChannel, ChannelEconomics>;
+  /** Commercial terms. Finance-only: null for roles without profitability access. */
+  economics: Record<OrderChannel, ChannelEconomics> | null;
   demo: DemoSettings;
   aiProvider: "deterministic";
 }

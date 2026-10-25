@@ -154,8 +154,9 @@ export interface ProductPerformance {
   quantity: number;
   revenue: number;
   orders: number;
-  foodCost: number;
-  marginPct: number;
+  /** Undefined when food costs are not available to the viewer (finance-only data). */
+  foodCost?: number;
+  marginPct?: number;
 }
 
 export function productPerformance(orders: UnifiedOrder[], menu: MenuItem[]): ProductPerformance[] {
@@ -175,10 +176,18 @@ export function productPerformance(orders: UnifiedOrder[], menu: MenuItem[]): Pr
       p.quantity += line.quantity;
       p.revenue += line.total * discountRatio;
       p.orders += 1;
-      p.foodCost += item.foodCost * line.quantity;
+      p.foodCost = item.foodCost === undefined || p.foodCost === undefined ? undefined : p.foodCost + item.foodCost * line.quantity;
     }
   }
-  for (const p of perf.values()) p.marginPct = p.revenue ? ((p.revenue - p.foodCost) / p.revenue) * 100 : 0;
+  for (const p of perf.values()) {
+    const costed = menu.length > 0 && menu.every((m) => m.foodCost !== undefined);
+    if (!costed) {
+      p.foodCost = undefined;
+      p.marginPct = undefined;
+    } else {
+      p.marginPct = p.revenue ? ((p.revenue - (p.foodCost ?? 0)) / p.revenue) * 100 : 0;
+    }
+  }
   return [...perf.values()];
 }
 

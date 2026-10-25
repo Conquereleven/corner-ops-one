@@ -55,7 +55,6 @@ export async function inviteMember(ctx: AppContext, input: z.infer<typeof invite
   if (existing) throw new ConflictError("This person is already a member or has a pending invitation.");
   const m = await ctx.repos.memberships.invite({ email: input.email, role: input.role, locationIds, invitedBy: ctx.user.id });
   await ctx.repos.events.append({ type: "membership.invited", aggregateType: "membership", aggregateId: m.id, payload: { email: input.email, role: input.role, locationIds } }, ctx.actor);
-  await ctx.repos.audit.record({ action: "membership.invited", entityType: "membership", entityId: m.id, after: view(m) }, ctx.actor);
   return m;
 }
 
@@ -89,7 +88,6 @@ export async function updateMember(ctx: AppContext, id: string, patch: z.infer<t
     : patch.role && patch.role !== before.role ? "membership.role_changed"
     : "membership.locations_changed";
   await ctx.repos.events.append({ type: "membership.updated", aggregateType: "membership", aggregateId: id, payload: { action, ...view(after) } }, ctx.actor);
-  await ctx.repos.audit.record({ action, entityType: "membership", entityId: id, before: view(before), after: view(after) }, ctx.actor);
   return after;
 }
 
@@ -97,10 +95,8 @@ export const organizationPatchSchema = z.object({ name: z.string().trim().min(2)
 
 export async function updateOrganization(ctx: AppContext, patch: z.infer<typeof organizationPatchSchema>) {
   requirePermission(ctx, "organization.manage");
-  const before = ctx.organization;
-  const after = await ctx.repos.organization.update({ name: patch.name });
-  await ctx.repos.audit.record({ action: "organization.updated", entityType: "organization", entityId: before.id, before: { name: before.name }, after: { name: after.name } }, ctx.actor);
-  return after;
+  // Audited by the database trigger on organizations.
+  return ctx.repos.organization.update({ name: patch.name });
 }
 
 export async function getActivity(ctx: AppContext, limit = 100) {

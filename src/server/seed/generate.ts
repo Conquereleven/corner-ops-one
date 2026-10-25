@@ -382,6 +382,7 @@ function seedOrders(db: Database, rng: Rng, now: number) {
 
   for (const p of plan) {
     const spec = buildOrderSpec(db, rng, { locationId: p.locationId, channel: p.channel, placedAt: p.at });
+    if (!spec) continue;
     const payload = adapters[p.channel].fabricate(spec);
     const ctx = createNormalizationContext(db, p.at);
     const order = finalizeIngestedOrder(db, adapters[p.channel].normalizeOrder(payload, ctx));

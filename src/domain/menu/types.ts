@@ -22,7 +22,8 @@ export interface MenuItem {
   description: string;
   sku: string;
   price: number;
-  foodCost: number;
+  /** Finance-only; undefined for roles without profitability access. */
+  foodCost?: number;
   /** Manually set availability (86'd). Inventory may additionally block it per location. */
   isAvailable: boolean;
   prepTimeMinutes: number;
@@ -60,6 +61,7 @@ export const MAPPING_STATUS_LABEL: Record<MappingStatus, string> = {
   error: "Error",
 };
 
-export function foodCostPct(item: Pick<MenuItem, "price" | "foodCost">): number {
+export function foodCostPct(item: Pick<MenuItem, "price" | "foodCost">): number | undefined {
+  if (item.foodCost === undefined) return undefined;
   return item.price ? (item.foodCost / item.price) * 100 : 0;
 }

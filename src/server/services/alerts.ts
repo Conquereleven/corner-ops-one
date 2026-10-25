@@ -10,7 +10,7 @@ import { todayWindow } from "./windows";
 export async function listAlerts(ctx: AppContext): Promise<OperationalAlert[]> {
   const now = ctx.now;
   const { start } = todayWindow(now);
-  const [today, baseline, recent, inventory, menu, connections, settings, states] = await Promise.all([
+  const [today, baseline, recent, inventory, menu, connections, settings, states, active] = await Promise.all([
     ctx.data.orders({ from: start, to: now + 1 }),
     ctx.data.orders({ from: start - 7 * DAY, to: start }),
     ctx.data.orders({ from: now - 4 * HOUR, to: now + 1, withItems: true }),
@@ -19,6 +19,7 @@ export async function listAlerts(ctx: AppContext): Promise<OperationalAlert[]> {
     ctx.data.connections(),
     ctx.data.settings(),
     ctx.repos.alerts.states(),
+    ctx.data.activeOrders(),
   ]);
   const drafts = computeAlerts({
     organizationId: ctx.organization.id,
@@ -32,6 +33,7 @@ export async function listAlerts(ctx: AppContext): Promise<OperationalAlert[]> {
     connections,
     mappings: menu.mappings,
     sla: settings.sla,
+    shortfallOrders: active.filter((o) => o.inventoryShortfall === "open" && ctx.scope.locationIds.includes(o.locationId)),
   });
   const unseen = drafts.filter((d) => !states.has(d.id));
   if (unseen.length) {

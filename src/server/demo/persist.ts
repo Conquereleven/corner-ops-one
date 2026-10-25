@@ -11,6 +11,8 @@ import type { Database } from "../store/types";
  */
 export async function persistWorkspace(db: Db, w: Database) {
   const org = w.organization.id;
+  // Seeding is not a user change: suspend row-level configuration audit (honoured only for system connections).
+  await db`select set_config('cornerops.audit_suspended', 'on', true)`;
   const insert = async (table: string, rows: Record<string, unknown>[], size = 1000) => {
     for (const batch of chunk(rows, size)) await db`insert into ${db(table)} ${db(batch)}`;
   };
@@ -81,6 +83,7 @@ export async function persistWorkspace(db: Db, w: Database) {
   await insert("orders", w.orders.map(orderRow), 500);
   await insert("order_items", w.orders.flatMap((o) => orderItemRows(o, (v) => db.json(v as never))));
   await insert("inventory_movements", w.inventoryMovements.map(movementRow));
+  await db`select set_config('cornerops.audit_suspended', 'off', true)`;
 }
 
 const CATALOG_ID = /"((?:org|rst|loc|itm|cat|inv|conn|map|cus)_[A-Za-z0-9_]+)"/g;

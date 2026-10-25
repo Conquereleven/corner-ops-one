@@ -33,13 +33,14 @@ export function pickLocation(db: Database, rng: Rng): string {
 
 /**
  * Compose what a customer ordered on a platform, using only items that are
- * actually listed (mapped) on that channel.
+ * actually listed (mapped) on that channel and sellable with current stock.
+ * Returns null when nothing can be ordered (e.g. every main is out of stock).
  */
 export function buildOrderSpec(
   db: Database,
   rng: Rng,
   args: { locationId: string; channel: OrderChannel; placedAt: number; customer?: Customer },
-): MockOrderSpec {
+): MockOrderSpec | null {
   const conn = db.channelConnections.find((c) => c.channel === args.channel && c.locationId === args.locationId);
   if (!conn) throw new Error(`${args.channel} is not connected at ${args.locationId}`);
   const behaviour = CHANNEL_BEHAVIOUR[args.channel];
@@ -51,11 +52,12 @@ export function buildOrderSpec(
   const extras = listed.filter((x) => ["cat_sides", "cat_desserts", "cat_starters"].includes(x.item.categoryId));
   const drinks = listed.filter((x) => x.item.categoryId === "cat_drinks");
 
+  if (!mains.length) return null;
   const picks: typeof listed = [];
   const mainCount = Math.max(1, Math.round(rng.float(0.7, 1.9) + behaviour.extraLines * rng.next()));
   for (let i = 0; i < mainCount; i++) picks.push(rng.weighted(mains, mains.map((m) => m.item.popularity)));
-  if (rng.chance(0.45 + behaviour.extraLines * 0.2)) picks.push(rng.weighted(extras, extras.map((m) => m.item.popularity)));
-  if (rng.chance(0.55)) picks.push(rng.weighted(drinks, drinks.map((m) => m.item.popularity)));
+  if (extras.length && rng.chance(0.45 + behaviour.extraLines * 0.2)) picks.push(rng.weighted(extras, extras.map((m) => m.item.popularity)));
+  if (drinks.length && rng.chance(0.55)) picks.push(rng.weighted(drinks, drinks.map((m) => m.item.popularity)));
 
   const lines = new Map<string, MockOrderSpec["lines"][number]>();
   for (const p of picks) {

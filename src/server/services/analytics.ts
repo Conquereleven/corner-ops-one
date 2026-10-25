@@ -16,6 +16,7 @@ import type { Location } from "@/domain/locations/types";
 import type { MenuItem } from "@/domain/menu/types";
 import type { ChannelEconomics, OrderChannel } from "@/domain/channels/types";
 import type { UnifiedOrder } from "@/domain/orders/types";
+import { ForbiddenError } from "../errors";
 import { requirePermission, type AppContext } from "../context/app-context";
 
 export interface AnalyticsInput {
@@ -23,7 +24,8 @@ export interface AnalyticsInput {
   orders: UnifiedOrder[];
   locations: Location[];
   menuItems: MenuItem[];
-  economics: Record<OrderChannel, ChannelEconomics>;
+  /** Null for roles without profitability access (commercial terms are finance-only). */
+  economics: Record<OrderChannel, ChannelEconomics> | null;
   /** First order on record (ms). */
   historyStart: number;
 }
@@ -124,7 +126,7 @@ export function computeAnalytics(input: AnalyticsInput, range: AnalyticsRange, n
   };
 
   const prepByLocation = byLocation.map((l) => ({ name: l.name, avgPrepMinutes: l.avgPrepMinutes }));
-  const rows = computeChannelProfitability(current, input.economics, input.menuItems);
+  const rows = input.economics ? computeChannelProfitability(current, input.economics, input.menuItems) : null;
 
   return {
     range: r.range,
@@ -147,7 +149,7 @@ export function computeAnalytics(input: AnalyticsInput, range: AnalyticsRange, n
     topProducts: sorted.slice(0, 8),
     bottomProducts: sorted.filter((p) => p.categoryId !== "cat_sides").slice(-5).reverse(),
     concentration,
-    profitability: { rows, totals: totalProfitability(rows) },
+    profitability: rows ? { rows, totals: totalProfitability(rows) } : null,
     channelNames: Object.fromEntries(ORDER_CHANNELS.map((c) => [c, CHANNEL_CATALOG[c].name])),
     orderCount: current.length,
     firstOrderAt: current.length ? Math.min(...current.map((o) => toMs(o.placedAt)!)) : null,
@@ -165,14 +167,16 @@ export type AnalyticsData = Awaited<ReturnType<typeof getAnalytics>>;
 export async function getProfitability(ctx: AppContext, range: AnalyticsRange) {
   requirePermission(ctx, "profitability.view");
   const input = await loadAnalyticsInput(ctx, range);
+  const economics = input.economics;
+  if (!economics) throw new ForbiddenError();
   const now = ctx.now;
   const r = resolveRange(range, now, input.historyStart);
   const current = betweenFn(input.orders)(r.start, r.end);
-  const rows = computeChannelProfitability(current, input.economics, input.menuItems).sort((a, b) => b.contribution - a.contribution);
+  const rows = computeChannelProfitability(current, economics, input.menuItems).sort((a, b) => b.contribution - a.contribution);
   const totals = totalProfitability(rows);
   const byMargin = [...rows].sort((a, b) => b.marginPct - a.marginPct);
   const byLocation = input.locations.map((l) => {
-    const lr = computeChannelProfitability(current.filter((o) => o.locationId === l.id), input.economics, input.menuItems);
+    const lr = computeChannelProfitability(current.filter((o) => o.locationId === l.id), economics, input.menuItems);
     return { locationId: l.id, name: l.name, ...totalProfitability(lr) };
   });
   return {
@@ -184,7 +188,7 @@ export async function getProfitability(ctx: AppContext, range: AnalyticsRange) {
     bestMargin: byMargin[0] ?? null,
     worstMargin: byMargin.at(-1) ?? null,
     topContributor: rows[0] ?? null,
-    economics: input.economics,
+    economics,
   };
 }
 export type ProfitabilityData = Awaited<ReturnType<typeof getProfitability>>;

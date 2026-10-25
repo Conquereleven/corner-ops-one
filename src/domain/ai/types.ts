@@ -84,7 +84,8 @@ export interface ProductSignal {
   name: string;
   quantity: number;
   revenue: number;
-  marginPct: number;
+  /** Undefined when food costs are not available to the viewer. */
+  marginPct?: number;
 }
 
 export type InsightTone = "positive" | "negative" | "neutral";

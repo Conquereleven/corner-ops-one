@@ -1,5 +1,5 @@
 import type { OrderChannel } from "@/domain/channels/types";
-import type { OrderStatus, UnifiedOrder, UnifiedOrderItem } from "@/domain/orders/types";
+import type { OrderShortfallLine, OrderStatus, UnifiedOrder, UnifiedOrderItem } from "@/domain/orders/types";
 import type { Db } from "../db/client";
 import { chunk, nullify, num, optNum, optStr, str } from "./mappers";
 
@@ -15,16 +15,41 @@ export interface OrderQuery {
 }
 
 export interface OrderRepository {
-  findById(id: string, opts?: { forUpdate?: boolean }): Promise<UnifiedOrder | null>;
+  findById(id: string): Promise<UnifiedOrder | null>;
   findByOrderNumber(orderNumber: string): Promise<UnifiedOrder | null>;
   list(query: OrderQuery): Promise<UnifiedOrder[]>;
   search(term: string, locationIds: string[], limit: number): Promise<UnifiedOrder[]>;
   /** Idempotent insert: orders whose (organization, channel, external id) already exists are skipped. */
   insertMany(orders: UnifiedOrder[]): Promise<UnifiedOrder[]>;
-  update(order: UnifiedOrder): Promise<UnifiedOrder>;
+  /** Status change through the database operation (state machine, inventory, event and audit in one step). */
+  transition(orderId: string, action: string, opts: TransitionOptions): Promise<{ id: string; status: OrderStatus }>;
+  /** Simulator-only bookkeeping (system connections). */
+  setMetadata(orderId: string, metadata: Record<string, unknown>): Promise<void>;
+  shortfalls(orderId: string): Promise<OrderShortfallLine[]>;
+  resolveShortfall(orderId: string, method: "reconcile_from_stock" | "accept_shortfall", note?: string): Promise<{ resolved: number; open: number }>;
   countForCustomer(customerId: string): Promise<number>;
   firstPlacedAt(locationIds: string[]): Promise<number | null>;
 }
+
+export interface TransitionOptions {
+  reason?: string;
+  syncStatus?: UnifiedOrder["syncStatus"];
+  courier?: UnifiedOrder["courier"];
+  actorLabel?: string;
+  channelSync?: { ok: boolean; externalStatus: string };
+}
+
+
+/** Every readable column. platform_fee is a finance-only column (see financial_order_fees). */
+const ORDER_COLUMNS = [
+  "id", "organization_id", "restaurant_id", "location_id", "order_number", "external_order_id", "channel_id", "status", "fulfillment",
+  "customer_id", "customer_name", "customer_phone", "subtotal", "discount", "delivery_fee", "tax", "total", "payment_method",
+  "estimated_prep_minutes", "notes", "courier", "placed_at", "accepted_at", "preparation_started_at", "ready_at", "picked_up_at",
+  "completed_at", "cancelled_at", "cancellation_reason", "sync_status", "source", "metadata", "created_at", "updated_at",
+].map((c) => `o.${c}`).join(", ");
+
+const SHORTFALL_STATE = `(select case when bool_or(s.status = 'open') then 'open' else 'resolved' end
+  from public.order_inventory_shortfalls s where s.order_id = o.id) as inventory_shortfall`;
 
 const ITEMS_JSON = `coalesce((select json_agg(json_build_object(
   'id', i.id, 'menuItemId', i.menu_item_id, 'externalItemId', i.external_item_id, 'name', i.name,
@@ -92,6 +117,7 @@ export function mapOrder(r: Record<string, unknown>): UnifiedOrder {
     cancelledAt: optStr(r.cancelled_at),
     cancellationReason: optStr(r.cancellation_reason),
     syncStatus: str(r.sync_status) as UnifiedOrder["syncStatus"],
+    inventoryShortfall: (optStr(r.inventory_shortfall) as UnifiedOrder["inventoryShortfall"]) ?? undefined,
     source: str(r.source) as UnifiedOrder["source"],
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
@@ -161,22 +187,29 @@ export function orderItemRows(o: UnifiedOrder, json: (v: unknown) => unknown) {
   );
 }
 
-export function createOrderRepository(db: Db, organizationId: string): OrderRepository {
-  const select = (withItems: boolean) => db.unsafe(`o.*, ${withItems ? ITEMS_JSON : "'[]'::json"} as items`);
+export function createOrderRepository(db: Db, organizationId: string, opts: { financials?: boolean } = {}): OrderRepository {
+  const select = (withItems: boolean) => db.unsafe(`${ORDER_COLUMNS}, ${SHORTFALL_STATE}, ${withItems ? ITEMS_JSON : "'[]'::json"} as items`);
+
+  /** Finance roles get platform commission merged in; the database refuses everyone else. */
+  const withFees = async (orders: UnifiedOrder[]) => {
+    if (!opts.financials || !orders.length) return orders;
+    const fees = new Map<string, number | undefined>();
+    for (const batch of chunk(orders.map((o) => o.id), 5000)) {
+      const rows = await db`select order_id, platform_fee from public.financial_order_fees(${organizationId}, ${batch})`;
+      for (const r of rows) fees.set(str(r.order_id), optNum(r.platform_fee));
+    }
+    for (const o of orders) o.platformFee = fees.get(o.id);
+    return orders;
+  };
+  const one = async (rows: Record<string, unknown>[]) => (rows[0] ? (await withFees([mapOrder(rows[0])]))[0] : null);
 
   return {
-    async findById(id, opts = {}) {
-      if (opts.forUpdate) {
-        const locked = await db`select id from public.orders where id = ${id} and organization_id = ${organizationId} for update`;
-        if (!locked.length) return null;
-      }
-      const rows = await db`select ${select(true)} from public.orders o where o.id = ${id} and o.organization_id = ${organizationId}`;
-      return rows[0] ? mapOrder(rows[0]) : null;
+    async findById(id) {
+      return one(await db`select ${select(true)} from public.orders o where o.id = ${id} and o.organization_id = ${organizationId}`);
     },
 
     async findByOrderNumber(orderNumber) {
-      const rows = await db`select ${select(true)} from public.orders o where o.order_number = ${orderNumber} and o.organization_id = ${organizationId}`;
-      return rows[0] ? mapOrder(rows[0]) : null;
+      return one(await db`select ${select(true)} from public.orders o where o.order_number = ${orderNumber} and o.organization_id = ${organizationId}`);
     },
 
     async list(q) {
@@ -191,7 +224,7 @@ export function createOrderRepository(db: Db, organizationId: string): OrderRepo
           ${q.channel ? db`and o.channel_id = ${q.channel}` : db``}
         order by o.placed_at ${q.orderBy === "placed_desc" ? db`desc` : db`asc`}
         ${q.limit ? db`limit ${q.limit}` : db``}`;
-      return rows.map(mapOrder);
+      return withFees(rows.map(mapOrder));
     },
 
     async search(term, locationIds, limit) {
@@ -203,7 +236,7 @@ export function createOrderRepository(db: Db, organizationId: string): OrderRepo
           and (o.order_number ilike ${like} or o.external_order_id ilike ${like} or o.customer_name ilike ${like}
                or exists (select 1 from public.order_items i where i.order_id = o.id and i.name ilike ${like}))
         order by o.placed_at desc limit ${limit}`;
-      return rows.map(mapOrder);
+      return withFees(rows.map(mapOrder));
     },
 
     async insertMany(orders) {
@@ -222,19 +255,43 @@ export function createOrderRepository(db: Db, organizationId: string): OrderRepo
       return created;
     },
 
-    async update(order) {
-      const r = orderRow(order);
+    async transition(orderId, action, t) {
+      const [r] = await db`
+        select public.apply_order_transition(
+          ${orderId}, ${action}, ${t.reason ?? null}, ${t.syncStatus ?? null},
+          ${t.courier ? db.json(t.courier as never) : null}, ${t.actorLabel ?? null},
+          ${t.channelSync ? db.json(t.channelSync as never) : null}) as result`;
+      const res = r.result as { id: string; status: OrderStatus };
+      return { id: String(res.id), status: res.status };
+    },
+
+    async setMetadata(orderId, metadata) {
+      await db`update public.orders set metadata = ${db.json(metadata as never)} where id = ${orderId} and organization_id = ${organizationId}`;
+    },
+
+    async shortfalls(orderId) {
       const rows = await db`
-        update public.orders set
-          status = ${r.status}, accepted_at = ${r.accepted_at}, preparation_started_at = ${r.preparation_started_at},
-          ready_at = ${r.ready_at}, picked_up_at = ${r.picked_up_at}, completed_at = ${r.completed_at},
-          cancelled_at = ${r.cancelled_at}, cancellation_reason = ${r.cancellation_reason},
-          courier = ${r.courier as never}, sync_status = ${r.sync_status}, metadata = ${r.metadata as never},
-          updated_at = ${r.updated_at}
-        where id = ${order.id} and organization_id = ${organizationId}
-        returning id`;
-      if (!rows.length) throw Object.assign(new Error("order not updated"), { code: "P0002" });
-      return order;
+        select id, inventory_item_id, ingredient_key, unit, requested_quantity, consumed_quantity, unmet_quantity, status, resolution, resolution_note, resolved_at
+        from public.order_inventory_shortfalls where order_id = ${orderId} and organization_id = ${organizationId} order by ingredient_key`;
+      return rows.map((r) => ({
+        id: str(r.id),
+        inventoryItemId: optStr(r.inventory_item_id),
+        ingredientKey: str(r.ingredient_key),
+        unit: optStr(r.unit),
+        requestedQuantity: num(r.requested_quantity),
+        consumedQuantity: num(r.consumed_quantity),
+        unmetQuantity: num(r.unmet_quantity),
+        status: str(r.status) as OrderShortfallLine["status"],
+        resolution: optStr(r.resolution) as OrderShortfallLine["resolution"],
+        resolutionNote: optStr(r.resolution_note),
+        resolvedAt: optStr(r.resolved_at),
+      }));
+    },
+
+    async resolveShortfall(orderId, method, note) {
+      const [r] = await db`select public.resolve_order_shortfall(${orderId}, ${method}, ${note ?? null}) as result`;
+      const res = r.result as { resolved: number; open: number };
+      return { resolved: Number(res.resolved), open: Number(res.open) };
     },
 
     async firstPlacedAt(locationIds) {

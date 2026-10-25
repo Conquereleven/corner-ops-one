@@ -17,7 +17,8 @@ export interface IngestionContext {
   mappings: MenuChannelMapping[];
   menuItems: MenuItem[];
   customers: Customer[];
-  economics: Record<OrderChannel, ChannelEconomics>;
+  /** Commission estimate for marketplace orders without a reported fee (system ingestion always has it). */
+  economics: Record<OrderChannel, ChannelEconomics> | null;
 }
 
 export function buildNormalizationContext(ic: IngestionContext, firstOrderNumber: number, now: number): NormalizationContext {
@@ -49,7 +50,7 @@ export function enrichOrder(order: UnifiedOrder, ic: Pick<IngestionContext, "cus
     const match = ic.customers.find((c) => c.phone.endsWith(tail) && c.name.startsWith(first));
     if (match) order.customer.id = match.id;
   }
-  if (order.platformFee === undefined && CHANNEL_CATALOG[order.channel].kind === "marketplace") {
+  if (order.platformFee === undefined && ic.economics && CHANNEL_CATALOG[order.channel].kind === "marketplace") {
     order.platformFee = round2(ic.economics[order.channel].commissionRate * (order.subtotal - order.discount));
     order.metadata = { ...order.metadata, platformFeeEstimated: true };
   }

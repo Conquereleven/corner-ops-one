@@ -2,11 +2,10 @@ import "server-only";
 import { z } from "zod";
 import { CHANNEL_CATALOG, ORDER_CHANNELS, orderChannelSchema } from "@/domain/channels/types";
 import { appMode } from "../config";
-import { requirePermission, type AppContext } from "../context/app-context";
-import { getDemoFeed } from "../demo/simulation";
+import { requireLocationAccess, requirePermission, type AppContext } from "../context/app-context";
+import { getDemoFeed, injectDemoOrder } from "../demo/simulation";
 import { resetDemoWorkspace } from "../demo/workspace";
-import { ForbiddenError } from "../errors";
-import { injectOrder } from "./orders";
+import { ConflictError, ForbiddenError } from "../errors";
 
 export async function getSettings(ctx: AppContext) {
   requirePermission(ctx, "settings.view");
@@ -14,7 +13,7 @@ export async function getSettings(ctx: AppContext) {
     ctx.data.settings(),
     ctx.repos.organization.restaurant(),
     ctx.data.connections(),
-    ctx.organization.isDemo && appMode() === "demo" ? getDemoFeed(ctx.organization.id) : Promise.resolve([]),
+    ctx.organization.isDemo && appMode() === "demo" ? getDemoFeed(ctx.organization.id, 25, ctx.db) : Promise.resolve([]),
   ]);
   return {
     organization: ctx.organization,
@@ -77,21 +76,14 @@ export async function updateSettings(ctx: AppContext, patch: z.infer<typeof sett
   if (patch.sla) Object.assign(next.sla, patch.sla);
   if (patch.demo) Object.assign(next.demo, patch.demo);
   if (patch.economics) {
-    for (const [ch, e] of Object.entries(patch.economics)) Object.assign(next.economics[ch as keyof typeof next.economics], e);
+    const economics = next.economics;
+    if (!economics) throw new ForbiddenError("Channel economics are limited to owners, admins and operations managers.");
+    for (const [ch, e] of Object.entries(patch.economics)) Object.assign(economics[ch as keyof typeof economics], e);
   }
-  await ctx.repos.organization.updateSettings(next);
-  const sections = Object.keys(patch).filter((k) => patch[k as keyof typeof patch]);
+  const sections = (["sla", "economics", "demo"] as const).filter((k) => patch[k]);
+  // The audit entry (before/after per section) is written by the database trigger on organization_settings.
+  await ctx.repos.organization.updateSettings(next, [...sections]);
   await ctx.repos.events.append({ type: "settings.updated", aggregateType: "organization", aggregateId: ctx.organization.id, payload: { sections } }, ctx.actor);
-  await ctx.repos.audit.record(
-    {
-      action: "settings.updated",
-      entityType: "organization_settings",
-      entityId: ctx.organization.id,
-      before: Object.fromEntries(sections.map((s) => [s, before[s as keyof typeof before]])),
-      after: Object.fromEntries(sections.map((s) => [s, next[s as keyof typeof next]])),
-    },
-    ctx.actor,
-  );
   return next;
 }
 
@@ -100,13 +92,40 @@ export const demoActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("reset"), confirm: z.literal("RESET") }),
 ]);
 
-export async function runDemoAction(ctx: AppContext, input: z.infer<typeof demoActionSchema>) {
+export type DemoAction = z.infer<typeof demoActionSchema>;
+
+export interface AuthorizedDemoAction {
+  organizationId: string;
+  actor: AppContext["actor"];
+  input: DemoAction;
+}
+
+/**
+ * Step 1 (inside the user's RLS transaction): check role, demo organization
+ * and location. Returns what step 2 needs; nothing is changed here.
+ */
+export function authorizeDemoAction(ctx: AppContext, input: DemoAction): AuthorizedDemoAction {
   requirePermission(ctx, "demo.manage");
   if (!ctx.organization.isDemo) throw new ForbiddenError("Only the Demo Workspace can be reset or receive simulated orders.");
+  if (input.action === "inject" && input.locationId) requireLocationAccess(ctx, input.locationId);
+  return { organizationId: ctx.organization.id, actor: ctx.actor, input };
+}
+
+/**
+ * Step 2 (after the user transaction has committed): run the simulator work in
+ * its own system transaction — never nested inside a pooled user transaction.
+ */
+export async function executeDemoAction(auth: AuthorizedDemoAction) {
+  const { input } = auth;
   if (input.action === "reset") {
-    await resetDemoWorkspace(ctx.actor);
+    await resetDemoWorkspace(auth.actor);
     return { ok: true as const, order: null, message: "Demo Workspace restored to its initial state" };
   }
-  const res = await injectOrder(ctx, input);
-  return { ok: true as const, order: res.order, message: res.message };
+  const res = await injectDemoOrder(auth.organizationId, { channel: input.channel, locationId: input.locationId });
+  if (res.unavailable) throw new ConflictError(`${input.channel ?? "That channel"} is not available at that location.`);
+  return {
+    ok: true as const,
+    order: res.order,
+    message: res.queued ? "The integration is disconnected — the order is queued on the platform until you reconnect." : null,
+  };
 }

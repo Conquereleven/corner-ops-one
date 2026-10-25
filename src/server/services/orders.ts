@@ -1,15 +1,12 @@
 import "server-only";
 import { z } from "zod";
-import type { OrderChannel } from "@/domain/channels/types";
-import { orderChannelSchema } from "@/domain/channels/types";
 import { computeSla } from "@/domain/orders/sla";
 import { orderActionSchema } from "@/domain/orders/state-machine";
 import { ACTIVE_STATUSES, type OrderFilters, type OrderStatus, type UnifiedOrder } from "@/domain/orders/types";
 import { DAY, HOUR, toMs } from "@/lib/time";
 import { requireLocationAccess, requirePermission, type AppContext } from "../context/app-context";
 import { loadChannelRuntime } from "../demo/backend-session";
-import { injectDemoOrder as simulateInjectedOrder } from "../demo/simulation";
-import { ConflictError, ForbiddenError, NotFoundError } from "../errors";
+import { ConflictError, NotFoundError } from "../errors";
 import { transitionOrder } from "./order-transitions";
 import { todayWindow } from "./windows";
 
@@ -82,9 +79,14 @@ export async function getOrder(ctx: AppContext, id: string) {
     ctx.data.settings(),
     ctx.repos.channels.logs({ channel: order.channel, locationIds: [order.locationId], limit: 10, matching: order.externalOrderId }),
   ]);
-  const lifetimeOrders = customer ? await ctx.repos.orders.countForCustomer(customer.id) : 0;
+  const [lifetimeOrders, shortfalls] = await Promise.all([
+    customer ? ctx.repos.orders.countForCustomer(customer.id) : Promise.resolve(0),
+    order.inventoryShortfall ? ctx.repos.orders.shortfalls(order.id) : Promise.resolve([]),
+  ]);
   return {
     order,
+    shortfalls,
+    canResolveShortfall: ctx.permissions.has("inventory.manage"),
     customer: customer ? { ...customer, lifetimeOrders } : null,
     channelLogs: logs,
     sla: settings.sla,
@@ -106,21 +108,25 @@ export async function performOrderAction(ctx: AppContext, id: string, input: z.i
   return transitionOrder({ repos: ctx.repos, actor: ctx.actor, channels, mode: "user" }, id, input.action, { reason: input.reason, at: Date.now() });
 }
 
-export const injectSchema = z.object({
-  channel: orderChannelSchema.optional(),
-  locationId: z.string().optional(),
+export const shortfallResolutionSchema = z.object({
+  method: z.enum(["reconcile_from_stock", "accept_shortfall"]),
+  note: z.string().trim().max(300).optional(),
 });
 
-/** Presenter tool for the Demo Workspace only. */
-export async function injectOrder(ctx: AppContext, input: { channel?: OrderChannel; locationId?: string }) {
-  requirePermission(ctx, "demo.manage");
-  if (!ctx.organization.isDemo) throw new ForbiddenError("Simulated orders are only available in the Demo Workspace.");
-  if (input.locationId) requireLocationAccess(ctx, input.locationId);
-  const res = await simulateInjectedOrder(ctx.organization.id, input);
-  if (res.unavailable) throw new ConflictError(`${input.channel ?? "That channel"} is not available at that location.`);
-  return {
-    order: res.order,
-    queued: res.queued,
-    message: res.queued ? "The integration is disconnected — the order is queued on the platform until you reconnect." : null,
-  };
+/**
+ * Explicit, audited resolution of an order's inventory shortfall (never automatic):
+ * - reconcile_from_stock deducts stock that is available now for the unmet quantity
+ *   (lines that still cannot be met stay open);
+ * - accept_shortfall closes the lines without stock changes (substitution, omitted
+ *   ingredient, comp) and requires a note.
+ * The database operation re-checks role and location and writes event + audit.
+ */
+export async function resolveOrderShortfall(ctx: AppContext, id: string, input: z.infer<typeof shortfallResolutionSchema>) {
+  requirePermission(ctx, "inventory.manage");
+  const order = await ctx.repos.orders.findById(id);
+  if (!order) throw new NotFoundError("Order");
+  requireLocationAccess(ctx, order.locationId);
+  if (input.method === "accept_shortfall" && !input.note) throw new ConflictError("Add a note explaining how the shortfall was handled.");
+  const result = await ctx.repos.orders.resolveShortfall(order.id, input.method, input.note || undefined);
+  return { ...result, order: (await ctx.repos.orders.findById(order.id))!, shortfalls: await ctx.repos.orders.shortfalls(order.id) };
 }

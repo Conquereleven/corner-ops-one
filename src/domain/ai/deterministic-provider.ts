@@ -156,7 +156,7 @@ function answerProducts(s: OperationsSnapshot) {
   return {
     answer: `${s.products.top[0]?.name ?? "—"} is the best seller this week. The bottom of the menu is worth reviewing for simplification.`,
     bullets: [
-      ...s.products.top.slice(0, 5).map((p, i) => `#${i + 1} ${p.name}: ${p.quantity} sold · ${formatAED(p.revenue)} · ${p.marginPct.toFixed(0)}% food margin`),
+      ...s.products.top.slice(0, 5).map((p, i) => `#${i + 1} ${p.name}: ${p.quantity} sold · ${formatAED(p.revenue)}${p.marginPct !== undefined ? ` · ${p.marginPct.toFixed(0)}% food margin` : ""}`),
       ...s.products.bottom.slice(0, 3).map((p) => `Low: ${p.name} — ${p.quantity} sold · ${formatAED(p.revenue)}`),
     ],
     sources: ["Product performance · last 7 days"],

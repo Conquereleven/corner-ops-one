@@ -81,7 +81,7 @@ export function buildSnapshot(input: SnapshotInput, now: number): OperationsSnap
       };
     });
 
-  const profit = computeChannelProfitability(last7, db.settings.economics, db.menuItems);
+  const profit = db.settings.economics ? computeChannelProfitability(last7, db.settings.economics, db.menuItems) : [];
   const health = channelHealthSummary(input.connections, today);
   const channels = ORDER_CHANNELS.filter((c) => health.find((h) => h.channel === c)?.covered).map((channel) => {
     const ct = summarize(today.filter((o) => o.channel === channel));

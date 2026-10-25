@@ -234,6 +234,22 @@ export function useOrderAction() {
   });
 }
 
+export function useResolveShortfall() {
+  const qc = useQueryClient();
+  const invalidate = useInvalidateOperational();
+  return useMutation({
+    mutationFn: (vars: { orderId: string; method: "reconcile_from_stock" | "accept_shortfall"; note?: string }) =>
+      api.post<{ resolved: number; open: number }>(`/api/orders/${vars.orderId}/shortfall`, { method: vars.method, note: vars.note }),
+    onSuccess: (res, vars) => {
+      if (res.open > 0) toast.warning("Shortfall partly resolved", { description: `${res.open} ingredient line(s) still short — restock or accept the shortfall.` });
+      else toast.success("Shortfall resolved");
+      qc.invalidateQueries({ queryKey: queryKeys.order(vars.orderId) });
+    },
+    onError: (err: Error) => toast.error("Could not resolve shortfall", { description: err.message }),
+    onSettled: invalidate,
+  });
+}
+
 export function useInjectOrder() {
   const invalidate = useInvalidateOperational();
   return useMutation({

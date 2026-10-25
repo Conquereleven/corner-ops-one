@@ -20,7 +20,7 @@ const mapItem = (r: Record<string, unknown>): MenuItem => ({
   description: str(r.description),
   sku: str(r.sku),
   price: num(r.price),
-  foodCost: num(r.food_cost),
+  foodCost: undefined,
   isAvailable: Boolean(r.is_available),
   prepTimeMinutes: num(r.prep_time_minutes),
   taxRate: num(r.tax_rate),
@@ -47,9 +47,19 @@ const mapMapping = (r: Record<string, unknown>): MenuChannelMapping => ({
   updatedAt: str(r.updated_at),
 });
 
-export function createMenuRepository(db: Db, organizationId: string): MenuRepository {
+/** Readable menu item columns; food_cost is finance-only (see financial_menu_costs). */
+const ITEM_COLUMNS = ["id", "organization_id", "category_id", "name", "description", "sku", "price", "is_available", "prep_time_minutes",
+  "tax_rate", "image_emoji", "popularity", "tags", "created_at", "updated_at"].map((c) => `mi.${c}`).join(", ");
+
+export function createMenuRepository(db: Db, organizationId: string, opts: { financials?: boolean } = {}): MenuRepository {
+  const withCosts = async (items: MenuItem[]) => {
+    if (!opts.financials || !items.length) return items;
+    const costs = new Map((await db`select menu_item_id, food_cost from public.financial_menu_costs(${organizationId})`).map((r) => [str(r.menu_item_id), num(r.food_cost)]));
+    for (const i of items) i.foodCost = costs.get(i.id);
+    return items;
+  };
   const itemSelect = db`
-    select mi.*, coalesce((select json_agg(json_build_object('k', r.ingredient_key, 'q', r.quantity) order by r.ingredient_key)
+    select ${db.unsafe(ITEM_COLUMNS)}, coalesce((select json_agg(json_build_object('k', r.ingredient_key, 'q', r.quantity) order by r.ingredient_key)
       from public.menu_item_recipes r where r.menu_item_id = mi.id), '[]'::json) as recipe
     from public.menu_items mi`;
   return {
@@ -62,7 +72,7 @@ export function createMenuRepository(db: Db, organizationId: string): MenuReposi
     },
     async items() {
       const rows = await db`${itemSelect} where mi.organization_id = ${organizationId} order by mi.sku`;
-      return rows.map(mapItem);
+      return withCosts(rows.map(mapItem));
     },
     async mappings() {
       const rows = await db`select * from public.menu_channel_mappings where organization_id = ${organizationId} order by menu_item_id, channel_id`;
@@ -70,7 +80,7 @@ export function createMenuRepository(db: Db, organizationId: string): MenuReposi
     },
     async findItem(id) {
       const rows = await db`${itemSelect} where mi.organization_id = ${organizationId} and mi.id = ${id}`;
-      return rows[0] ? mapItem(rows[0]) : null;
+      return rows[0] ? (await withCosts([mapItem(rows[0])]))[0] : null;
     },
     async updateItem(id, patch) {
       const rows = await db`

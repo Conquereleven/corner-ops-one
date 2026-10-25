@@ -20,7 +20,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { availableActions, primaryAction, TRANSITIONS, type OrderAction } from "@/domain/orders/state-machine";
+import { availableActions, blockedByShortfall, primaryAction, TRANSITIONS, type OrderAction } from "@/domain/orders/state-machine";
 import type { UnifiedOrder } from "@/domain/orders/types";
 import { useOrderAction } from "@/hooks/queries";
 import { useCan } from "@/hooks/use-session";
@@ -63,10 +63,13 @@ export function OrderActions({
 
   const run = (action: OrderAction, r?: string) => mutation.mutate({ order, action, reason: r });
 
-  if (!primary && !canCancel) return null;
+  if (!primary && !canCancel && order.inventoryShortfall !== "open") return null;
 
   return (
     <div className={cn("flex items-center gap-1.5", className)} onClick={(e) => e.stopPropagation()}>
+      {primary && blockedByShortfall(order, primary) ? (
+        <span className="inline-flex items-center rounded-md border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-800">Stock shortfall — manager review</span>
+      ) : null}
       {primary && actions.includes(primary) ? (
         <Button size={size} className={cn("font-semibold", PRIMARY_STYLE[primary], stretch && "flex-1")} disabled={busy} onClick={() => run(primary)}>
           {busy ? <Loader2 className="animate-spin" /> : null}

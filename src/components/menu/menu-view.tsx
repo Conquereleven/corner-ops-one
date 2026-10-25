@@ -122,7 +122,7 @@ export function MenuView() {
               <th className="px-4 py-2 font-medium">Product</th>
               <th className="px-3 py-2 font-medium">Category</th>
               <th className="px-3 py-2 text-right font-medium">Price</th>
-              <th className="px-3 py-2 text-right font-medium">Food cost</th>
+              {data.canViewCosts ? <th className="px-3 py-2 text-right font-medium">Food cost</th> : null}
               <th className="px-3 py-2 text-right font-medium">Prep</th>
               <th className="px-3 py-2 text-right font-medium">Sold today</th>
               <th className="px-3 py-2 font-medium">Availability</th>
@@ -160,7 +160,9 @@ export function MenuView() {
                   </td>
                   <td className="px-3 py-2 text-muted-foreground">{catName(i.categoryId)}</td>
                   <td className="px-3 py-2 text-right font-medium tabular">{formatAED(i.price)}</td>
-                  <td className={cn("px-3 py-2 text-right tabular", i.foodCostPct > 35 ? "text-amber-700" : "text-muted-foreground")}>{formatPercent(i.foodCostPct, 0)}</td>
+                  {i.foodCostPct !== undefined ? (
+                    <td className={cn("px-3 py-2 text-right tabular", i.foodCostPct > 35 ? "text-amber-700" : "text-muted-foreground")}>{formatPercent(i.foodCostPct, 0)}</td>
+                  ) : null}
                   <td className="px-3 py-2 text-right tabular text-muted-foreground">{i.prepTimeMinutes}m</td>
                   <td className="px-3 py-2 text-right tabular">{i.soldToday}</td>
                   <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
@@ -254,12 +256,14 @@ function MenuItemDetail({ item, categoryName, canManage }: { item: MenuItemView;
           <span className="text-xs text-muted-foreground">Prep time (min)</span>
           <Input type="number" min={0} step="1" value={prep} onChange={(e) => setPrep(e.target.value)} className="h-8" />
         </label>
-        <div className="space-y-1">
-          <span className="text-xs text-muted-foreground">Food cost</span>
-          <div className="h-8 leading-8 font-medium tabular">
-            {formatAED(item.foodCost, { precise: true })} <span className="text-xs text-muted-foreground">({formatPercent((item.foodCost / Number(price || item.price)) * 100, 0)})</span>
+        {item.foodCost !== undefined ? (
+          <div className="space-y-1">
+            <span className="text-xs text-muted-foreground">Food cost</span>
+            <div className="h-8 leading-8 font-medium tabular">
+              {formatAED(item.foodCost, { precise: true })} <span className="text-xs text-muted-foreground">({formatPercent((item.foodCost / Number(price || item.price)) * 100, 0)})</span>
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="space-y-1">
           <span className="text-xs text-muted-foreground">VAT</span>
           <div className="h-8 leading-8 font-medium">{(item.taxRate * 100).toFixed(0)}%</div>

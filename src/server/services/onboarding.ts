@@ -25,10 +25,7 @@ export async function createOrganization(user: SessionUser, input: z.infer<typeo
     const owned = await db`select count(*)::int as n from public.organization_memberships where user_id = ${user.id} and role = 'OWNER' and status = 'active'`;
     if (Number(owned[0].n) >= 5) throw new ConflictError("Organization limit reached for this account.");
     const [r] = await db`select public.create_organization(${input.name}, ${slugify(input.name)}, ${input.timezone}, ${input.currency}, ${db.json(settings as never)}) as id`;
-    const id = String(r.id);
-    await db`
-      insert into public.audit_logs (organization_id, actor_user_id, actor_label, action, entity_type, entity_id, after_data)
-      values (${id}, ${user.id}, 'user', 'organization.created', 'organization', ${id}, ${db.json({ name: input.name } as never)})`;
-    return { id };
+    // create_organization() records the 'organization.created' audit entry itself.
+    return { id: String(r.id) };
   });
 }

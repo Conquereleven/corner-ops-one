@@ -2,7 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { ORDER_CHANNELS, orderChannelSchema } from "@/domain/channels/types";
 import { itemAvailabilityAt } from "@/domain/inventory/usage";
-import { foodCostPct, type MenuItem } from "@/domain/menu/types";
+import { foodCostPct } from "@/domain/menu/types";
 import { iso, startOfDubaiDay, toMs } from "@/lib/time";
 import { requirePermission, type AppContext } from "../context/app-context";
 import { NotFoundError } from "../errors";
@@ -68,6 +68,7 @@ export async function getMenu(ctx: AppContext) {
       };
     }),
     canManage: ctx.permissions.has("menu.manage"),
+    canViewCosts: ctx.permissions.has("profitability.view"),
   };
 }
 export type MenuData = Awaited<ReturnType<typeof getMenu>>;
@@ -82,8 +83,6 @@ export const menuItemPatchSchema = z
   })
   .partial()
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
-
-const snapshot = (i: MenuItem) => ({ isAvailable: i.isAvailable, price: i.price, prepTimeMinutes: i.prepTimeMinutes, description: i.description });
 
 export async function updateMenuItem(ctx: AppContext, id: string, patch: z.infer<typeof menuItemPatchSchema>) {
   requirePermission(ctx, "menu.manage");
@@ -112,10 +111,6 @@ export async function updateMenuItem(ctx: AppContext, id: string, patch: z.infer
     },
     ctx.actor,
   );
-  await ctx.repos.audit.record(
-    { action: availabilityChanged ? "menu.availability_changed" : "menu.item_updated", entityType: "menu_item", entityId: id, before: snapshot(before), after: snapshot(after), metadata: { name: after.name, sku: after.sku } },
-    ctx.actor,
-  );
   return after;
 }
 
@@ -134,8 +129,8 @@ export async function syncMenu(ctx: AppContext, input: z.infer<typeof menuSyncSc
   for (const m of targets) await ctx.repos.menu.updateMapping({ ...m, status: "pending", message: PUBLISHING, updatedAt: now });
   await ctx.repos.channels.insertLogs([{ channel: input.channel, level: "info", message: `Menu publish requested for ${targets.length} item(s) (simulated)`, at: now }]);
   if (targets.length) {
-    await ctx.repos.audit.record(
-      { action: "menu.publish_requested", entityType: "channel", entityId: input.channel, metadata: { items: targets.map((t) => t.menuItemId), simulated: true } },
+    await ctx.repos.events.append(
+      { type: "menu.publish_requested", aggregateType: "channel", aggregateId: input.channel, payload: { items: targets.map((t) => t.menuItemId), simulated: true } },
       ctx.actor,
     );
   }

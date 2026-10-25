@@ -105,10 +105,12 @@ export function resolveScope(allowed: Location[], requested: string | null | und
 }
 
 export function buildAppContext(db: Db, identity: ResolvedIdentity, scope: Scope, now = Date.now()): AppContext {
-  const repos = createRepositories(db, identity.organization.id);
+  const permissions = permissionsFor(identity.membership.role, { isDemo: identity.organization.isDemo });
+  // The database enforces the same rule; this only avoids calls that would be refused.
+  const repos = createRepositories(db, identity.organization.id, { financials: permissions.has("profitability.view") });
   const ctx: AppContext = {
     ...identity,
-    permissions: permissionsFor(identity.membership.role, { isDemo: identity.organization.isDemo }),
+    permissions,
     scope,
     db,
     repos,

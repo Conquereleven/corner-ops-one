@@ -87,10 +87,6 @@ export async function runConnectionAction(ctx: AppContext, channel: OrderChannel
       },
       ctx.actor,
     );
-    await ctx.repos.audit.record(
-      { action: "channel.connection_changed", entityType: "channel_connection", entityId: c.id, locationId: c.locationId, before: { status: prev.status }, after: { status: c.status }, metadata: { channel, action: input.action, mode: c.mode } },
-      ctx.actor,
-    );
   }
   await runtime.backend.flush(ctx.repos, "user");
   return adapter.getHealth();

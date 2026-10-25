@@ -30,14 +30,20 @@ export interface Repositories {
   audit: AuditRepository;
 }
 
-export function createRepositories(db: Db, organizationId: string): Repositories {
+/**
+ * `financials` merges finance-only fields (commission, food cost, unit cost,
+ * commercial terms) through the database's financial functions, which refuse
+ * callers without a finance role.
+ */
+export function createRepositories(db: Db, organizationId: string, opts: { financials?: boolean } = {}): Repositories {
+  const fin = { financials: opts.financials ?? false };
   return {
-    organization: createOrganizationRepository(db, organizationId),
+    organization: createOrganizationRepository(db, organizationId, fin),
     locations: createLocationRepository(db, organizationId),
     memberships: createMembershipRepository(db, organizationId),
-    orders: createOrderRepository(db, organizationId),
-    menu: createMenuRepository(db, organizationId),
-    inventory: createInventoryRepository(db, organizationId),
+    orders: createOrderRepository(db, organizationId, fin),
+    menu: createMenuRepository(db, organizationId, fin),
+    inventory: createInventoryRepository(db, organizationId, fin),
     channels: createChannelRepository(db, organizationId),
     customers: createCustomerRepository(db, organizationId),
     alerts: createAlertRepository(db, organizationId),

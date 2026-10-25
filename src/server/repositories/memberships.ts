@@ -72,11 +72,12 @@ export function createMembershipRepository(db: Db, organizationId: string): Memb
       return (await this.findById(id))!;
     },
     async setLocations(id, locationIds) {
-      await db`delete from public.membership_locations where membership_id = ${id}`;
+      // Change only what differs, so each grant/revoke is audited once.
+      await db`delete from public.membership_locations where membership_id = ${id} and location_id <> all(${locationIds})`;
       if (locationIds.length) {
         await db`insert into public.membership_locations ${db(
           locationIds.map((locationId) => ({ membership_id: id, location_id: locationId, organization_id: organizationId })),
-        )}`;
+        )} on conflict do nothing`;
       }
     },
   };

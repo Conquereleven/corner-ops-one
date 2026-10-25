@@ -79,11 +79,9 @@ export const locationPatchSchema = z
 export async function updateLocation(ctx: AppContext, id: string, patch: z.infer<typeof locationPatchSchema>) {
   requirePermission(ctx, "locations.manage");
   requireLocationAccess(ctx, id);
-  const before = ctx.allowedLocations.find((l) => l.id === id)!;
   const after = await ctx.repos.locations.update(id, patch);
-  const snap = (l: typeof before) => ({ operatingHours: l.operatingHours, managerName: l.managerName, isOpen: l.isOpen });
+  // Audited by the database trigger on locations (before/after of changed columns).
   await ctx.repos.events.append({ type: "location.updated", aggregateType: "location", aggregateId: id, locationId: id, payload: { name: after.name, changes: patch } }, ctx.actor);
-  await ctx.repos.audit.record({ action: "location.updated", entityType: "location", entityId: id, locationId: id, before: snap(before), after: snap(after), metadata: { name: after.name } }, ctx.actor);
   return after;
 }
 
@@ -103,6 +101,5 @@ export async function createLocation(ctx: AppContext, input: z.infer<typeof crea
   const restaurant = await ctx.repos.organization.restaurant();
   const location = await ctx.repos.locations.create({ ...input, restaurantId: restaurant.id });
   await ctx.repos.events.append({ type: "location.updated", aggregateType: "location", aggregateId: location.id, locationId: location.id, payload: { created: true, name: location.name } }, ctx.actor);
-  await ctx.repos.audit.record({ action: "location.created", entityType: "location", entityId: location.id, locationId: location.id, after: input }, ctx.actor);
   return location;
 }

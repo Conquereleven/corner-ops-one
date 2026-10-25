@@ -19,7 +19,7 @@ export async function getSystemStatus(ctx: AppContext) {
     ctx.permissions.has("channels.view") ? ctx.data.connections() : Promise.resolve([]),
     ctx.data.settings(),
     canSeeOps ? listAlerts(ctx) : Promise.resolve([]),
-    ctx.organization.isDemo && appMode() === "demo" ? getDemoFeed(ctx.organization.id, 8) : Promise.resolve([]),
+    ctx.organization.isDemo && appMode() === "demo" ? getDemoFeed(ctx.organization.id, 8, ctx.db) : Promise.resolve([]),
   ]);
   const health = channelHealthSummary(connections, today).filter((h) => h.covered);
   const latest = today

@@ -221,7 +221,8 @@ export function AnalyticsView({ initialRange }: { initialRange: AnalyticsRange }
   );
 }
 
-function ProductTable({ rows, compact }: { rows: { menuItemId: string; name: string; quantity: number; revenue: number; marginPct: number }[]; compact?: boolean }) {
+function ProductTable({ rows, compact }: { rows: { menuItemId: string; name: string; quantity: number; revenue: number; marginPct?: number }[]; compact?: boolean }) {
+  const showMargin = rows.some((p) => p.marginPct !== undefined);
   return (
     <table className="w-full text-sm">
       <thead className="border-b text-left text-xs text-muted-foreground">
@@ -229,7 +230,7 @@ function ProductTable({ rows, compact }: { rows: { menuItemId: string; name: str
           <th className="px-4 py-2 font-medium">Product</th>
           <th className="px-3 py-2 text-right font-medium">Sold</th>
           <th className="px-3 py-2 text-right font-medium">Revenue</th>
-          {!compact ? <th className="px-4 py-2 text-right font-medium">Food margin</th> : null}
+          {!compact && showMargin ? <th className="px-4 py-2 text-right font-medium">Food margin</th> : null}
         </tr>
       </thead>
       <tbody className="divide-y">
@@ -241,7 +242,7 @@ function ProductTable({ rows, compact }: { rows: { menuItemId: string; name: str
             </td>
             <td className="px-3 py-2 text-right tabular">{formatNumber(p.quantity)}</td>
             <td className="px-3 py-2 text-right font-medium tabular">{formatAED(p.revenue)}</td>
-            {!compact ? <td className="px-4 py-2 text-right tabular text-muted-foreground">{formatPercent(p.marginPct, 0)}</td> : null}
+            {!compact && showMargin ? <td className="px-4 py-2 text-right tabular text-muted-foreground">{p.marginPct !== undefined ? formatPercent(p.marginPct, 0) : "—"}</td> : null}
           </tr>
         ))}
       </tbody>

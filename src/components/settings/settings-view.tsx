@@ -47,7 +47,7 @@ export function SettingsView() {
         <SlaPanel key={JSON.stringify(data.settings.sla)} sla={data.settings.sla} canManage={data.canManage} />
         {data.simulation ? <DemoPanel data={data} /> : null}
         <IntegrationsPanel data={data} />
-        <EconomicsPanel key={JSON.stringify(data.settings.economics)} economics={data.settings.economics} canManage={data.canManage} />
+        {data.settings.economics ? <EconomicsPanel key={JSON.stringify(data.settings.economics)} economics={data.settings.economics} canManage={data.canManage} /> : null}
         {canViewAudit ? <ActivityPanel /> : null}
       </div>
     </div>

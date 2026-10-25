@@ -11,16 +11,18 @@ export interface UsageResult {
   threshold: number;
   beforeQuantity: number;
   afterQuantity: number;
+  requestedQuantity: number;
+  shortfallQuantity: number;
 }
 
 export interface InventoryRepository {
   items(locationIds: string[]): Promise<InventoryItem[]>;
-  findItem(id: string, opts?: { forUpdate?: boolean }): Promise<InventoryItem | null>;
-  findByKey(locationId: string, key: string, opts?: { forUpdate?: boolean }): Promise<InventoryItem | null>;
-  setQuantity(id: string, quantity: number): Promise<void>;
-  insertMovement(m: InventoryMovement): Promise<void>;
+  findItem(id: string): Promise<InventoryItem | null>;
+  findByKey(locationId: string, key: string): Promise<InventoryItem | null>;
   movements(locationIds: string[], limit: number): Promise<InventoryMovement[]>;
-  /** Atomically deduct an accepted order's recipe usage (idempotent per order). */
+  /** Manual stock movement through the database operation (validation, locking, event and audit in one step). */
+  recordMovement(input: { inventoryItemId: string; type: MovementType; quantity: number; note?: string; targetLocationId?: string }): Promise<{ id: string; quantity: number }>;
+  /** Re-run recipe consumption for an accepted order (idempotent; normally done by the transition itself). */
   applyOrderUsage(orderId: string, actorLabel: string): Promise<UsageResult[]>;
 }
 
@@ -35,7 +37,7 @@ export const mapInventoryItem = (r: Record<string, unknown>): InventoryItem => (
   quantity: num(r.quantity),
   threshold: num(r.threshold),
   parLevel: num(r.par_level),
-  unitCost: num(r.unit_cost),
+  unitCost: r.unit_cost === undefined || r.unit_cost === null ? undefined : num(r.unit_cost),
   supplier: str(r.supplier),
   createdAt: str(r.created_at),
   updatedAt: str(r.updated_at),
@@ -53,6 +55,8 @@ const mapMovement = (r: Record<string, unknown>): InventoryMovement => ({
   actorUserId: optStr(r.actor_user_id) ?? null,
   actorLabel: str(r.actor_label),
   reason: optStr(r.reason),
+  requestedQuantity: r.requested_quantity === null || r.requested_quantity === undefined ? undefined : num(r.requested_quantity),
+  shortfallQuantity: num(r.shortfall_quantity),
   createdAt: str(r.created_at),
   updatedAt: str(r.updated_at),
 });
@@ -75,31 +79,37 @@ export function movementRow(m: InventoryMovement) {
   });
 }
 
-export function createInventoryRepository(db: Db, organizationId: string): InventoryRepository {
+/** Readable item columns; unit_cost is finance-only (see financial_inventory_costs). */
+const ITEM_COLUMNS = ["id", "organization_id", "location_id", "ingredient_key", "name", "category", "unit", "quantity", "threshold",
+  "par_level", "supplier", "created_at", "updated_at"].join(", ");
+
+export function createInventoryRepository(db: Db, organizationId: string, opts: { financials?: boolean } = {}): InventoryRepository {
+  const cols = db.unsafe(ITEM_COLUMNS);
+  const withCosts = async (items: InventoryItem[]) => {
+    if (!opts.financials || !items.length) return items;
+    const costs = new Map((await db`select inventory_item_id, unit_cost from public.financial_inventory_costs(${organizationId})`).map((r) => [str(r.inventory_item_id), num(r.unit_cost)]));
+    for (const i of items) i.unitCost = costs.get(i.id);
+    return items;
+  };
   return {
     async items(locationIds) {
       if (!locationIds.length) return [];
-      const rows = await db`select * from public.inventory_items where organization_id = ${organizationId} and location_id = any(${locationIds}) order by location_id, name`;
-      return rows.map(mapInventoryItem);
+      const rows = await db`select ${cols} from public.inventory_items where organization_id = ${organizationId} and location_id = any(${locationIds}) order by location_id, name`;
+      return withCosts(rows.map(mapInventoryItem));
     },
-    async findItem(id, opts = {}) {
-      const rows = opts.forUpdate
-        ? await db`select * from public.inventory_items where id = ${id} and organization_id = ${organizationId} for update`
-        : await db`select * from public.inventory_items where id = ${id} and organization_id = ${organizationId}`;
-      return rows[0] ? mapInventoryItem(rows[0]) : null;
+    async findItem(id) {
+      const rows = await db`select ${cols} from public.inventory_items where id = ${id} and organization_id = ${organizationId}`;
+      return rows[0] ? (await withCosts([mapInventoryItem(rows[0])]))[0] : null;
     },
-    async findByKey(locationId, key, opts = {}) {
-      const rows = opts.forUpdate
-        ? await db`select * from public.inventory_items where organization_id = ${organizationId} and location_id = ${locationId} and ingredient_key = ${key} for update`
-        : await db`select * from public.inventory_items where organization_id = ${organizationId} and location_id = ${locationId} and ingredient_key = ${key}`;
-      return rows[0] ? mapInventoryItem(rows[0]) : null;
+    async findByKey(locationId, key) {
+      const rows = await db`select ${cols} from public.inventory_items where organization_id = ${organizationId} and location_id = ${locationId} and ingredient_key = ${key}`;
+      return rows[0] ? (await withCosts([mapInventoryItem(rows[0])]))[0] : null;
     },
-    async setQuantity(id, quantity) {
-      const rows = await db`update public.inventory_items set quantity = ${quantity} where id = ${id} and organization_id = ${organizationId} returning id`;
-      if (!rows.length) throw Object.assign(new Error("inventory not updated"), { code: "42501" });
-    },
-    async insertMovement(m) {
-      await db`insert into public.inventory_movements ${db(movementRow(m))}`;
+    async recordMovement(input) {
+      const [r] = await db`
+        select public.record_inventory_movement(${input.inventoryItemId}, ${input.type}, ${input.quantity}, ${input.note ?? null}, ${input.targetLocationId ?? null}) as result`;
+      const res = r.result as { id: string; quantity: number };
+      return { id: String(res.id), quantity: Number(res.quantity) };
     },
     async movements(locationIds, limit) {
       if (!locationIds.length) return [];
@@ -120,6 +130,8 @@ export function createInventoryRepository(db: Db, organizationId: string): Inven
         threshold: num(r.threshold),
         beforeQuantity: num(r.before_quantity),
         afterQuantity: num(r.after_quantity),
+        requestedQuantity: num(r.requested_quantity),
+        shortfallQuantity: num(r.shortfall_quantity),
       }));
     },
   };

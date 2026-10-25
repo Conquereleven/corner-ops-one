@@ -32,9 +32,17 @@ export function canTransition(status: OrderStatus, action: OrderAction): boolean
   return TRANSITIONS[action].from.includes(status);
 }
 
-export function availableActions(order: Pick<UnifiedOrder, "status" | "fulfillment">): OrderAction[] {
+/** Fulfilment steps that stay blocked while an inventory shortfall is unresolved. */
+export const SHORTFALL_BLOCKED_ACTIONS: readonly OrderAction[] = ["mark_ready", "mark_picked_up", "complete"];
+
+export function blockedByShortfall(order: Pick<UnifiedOrder, "inventoryShortfall">, action: OrderAction): boolean {
+  return order.inventoryShortfall === "open" && SHORTFALL_BLOCKED_ACTIONS.includes(action);
+}
+
+export function availableActions(order: Pick<UnifiedOrder, "status" | "fulfillment" | "inventoryShortfall">): OrderAction[] {
   return ORDER_ACTIONS.filter((a) => {
     if (!canTransition(order.status, a)) return false;
+    if (blockedByShortfall(order, a)) return false;
     // Delivery orders are completed after courier pickup; pickup orders complete from ready.
     return !(a === "complete" && order.status === "ready" && order.fulfillment === "delivery");
   });
