@@ -8,15 +8,17 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "db:verify": "npm run test -- tests/integration",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "db:verify": "npm run test:integration",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:watch": "vitest --project unit",
     "db:local:start": "scripts/db/local.sh start",
     "db:local:stop": "scripts/db/local.sh stop",
     "db:local:reset": "scripts/db/reset-local.sh cornerops",
     "db:migrate": "tsx --env-file=.env.local scripts/db/migrate.ts",
     "db:seed:demo": "tsx --env-file=.env.local --tsconfig tsconfig.json scripts/db/seed-demo.ts",
-    "db:migrate:deploy": "tsx scripts/db/migrate.ts"
+    "db:migrate:deploy": "tsx scripts/db/migrate.ts",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "CORNEROPS_TEST_DB_DISPOSABLE=1 vitest run --project integration"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

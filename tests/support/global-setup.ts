@@ -1,27 +1,38 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import postgres from "postgres";
-import { migrate } from "../../scripts/db/migrate";
+import { assertDisposableTestDatabase } from "./db-safety";
+
+const DEFAULT_LOCAL_URL = "postgres://postgres@127.0.0.1:54329/cornerops_test";
 
 /**
- * Recreate the test database from migrations and seed two tenants:
- *   - the Demo Workspace (org_cornerops_demo, is_demo)
- *   - "Casa Norte Hospitality LLC" (org_casanorte_hosp, production-like)
+ * Integration-suite setup: recreate a DISPOSABLE local test database from
+ * migrations and seed two tenants (Demo Workspace + a production-like tenant).
+ * The safety guard runs before any connection or SQL.
  */
 export default async function setup() {
-  const url = process.env.TEST_DATABASE_URL ?? "postgres://postgres@127.0.0.1:54329/cornerops_test";
-  const admin = url.replace(/\/[^/]+$/, "/postgres");
-  const dbName = url.split("/").pop()!;
+  let target;
+  try {
+    target = assertDisposableTestDatabase(process.env.TEST_DATABASE_URL ?? DEFAULT_LOCAL_URL);
+  } catch (err) {
+    process.stderr.write(`\n[cornerops] ${(err as Error).message}\n\n`);
+    throw err;
+  }
+
   if (!process.env.TEST_DATABASE_URL) {
     execFileSync(resolve(__dirname, "../../scripts/db/local.sh"), ["start"], { stdio: "ignore" });
   }
-  const sql = postgres(admin, { max: 1, onnotice: () => {} });
-  await sql.unsafe(`drop database if exists ${dbName} with (force)`);
-  await sql.unsafe(`create database ${dbName}`);
-  await sql.end();
-  await migrate(url, { localEmulation: true, log: () => {} });
+  const { default: postgres } = await import("postgres");
+  const { migrate } = await import("../../scripts/db/migrate");
+  const admin = postgres(target.adminUrl, { max: 1, onnotice: () => {} });
+  try {
+    await admin.unsafe(`drop database if exists ${target.quotedDatabase} with (force)`);
+    await admin.unsafe(`create database ${target.quotedDatabase}`);
+  } finally {
+    await admin.end();
+  }
+  await migrate(target.url, { localEmulation: true, log: () => {} });
 
-  process.env.DATABASE_URL = url;
+  process.env.DATABASE_URL = target.url;
   process.env.APP_MODE = "demo";
   process.env.APP_ENV = "test";
   process.env.AUTH_PROVIDER = "local";
