@@ -10,10 +10,13 @@
 --   public.apply_order_inventory_usage(...) recipe consumption for accepted orders (idempotent)
 --   public.record_inventory_movement(...)   purchases, adjustments, waste, transfers
 --
--- Shortage policy (pending founder approval, see docs/inventory-shortage-policy.md):
--- on-hand stock is deducted only up to what exists; the unmet remainder is
--- recorded as `shortfall_quantity` on the movement and as an
--- `inventory.shortfall` event — never silently clamped or invented.
+-- Shortage policy (founder-approved for the controlled pilot; docs/inventory-shortage-policy.md):
+--   * deduct only what is on hand — stock never goes negative automatically
+--   * persist requested, consumed and unmet quantities (movement + shortfall line)
+--   * emit `inventory.shortfall` in the same transaction (drives a critical alert)
+--   * an order with an open shortfall cannot advance to READY or later
+--   * resolution is an explicit, authorized, audited operation
+--     (public.resolve_order_shortfall); restocking never deducts automatically
 
 begin;
 
@@ -32,6 +35,41 @@ comment on column public.inventory_movements.shortfall_quantity is 'Demand that 
 create unique index inventory_movements_one_usage_per_order_item
   on public.inventory_movements (order_id, inventory_item_id) where type = 'usage' and order_id is not null;
 
+-- Unmet recipe demand per order and ingredient. Open lines block fulfilment.
+create table public.order_inventory_shortfalls (
+  id                  uuid primary key default gen_random_uuid(),
+  organization_id     text not null references public.organizations (id) on delete cascade,
+  location_id         text not null,
+  order_id            text not null,
+  inventory_item_id   text,
+  ingredient_key      text not null,
+  unit                text,
+  requested_quantity  numeric(12, 3) not null check (requested_quantity > 0),
+  consumed_quantity   numeric(12, 3) not null default 0 check (consumed_quantity >= 0),
+  unmet_quantity      numeric(12, 3) not null check (unmet_quantity >= 0),
+  status              text not null default 'open' check (status in ('open', 'resolved')),
+  resolution          text check (resolution in ('reconciled_from_stock', 'accepted_shortfall')),
+  resolution_note     text,
+  resolved_by         uuid references auth.users (id) on delete set null,
+  resolved_at         timestamptz,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  constraint order_shortfalls_one_per_ingredient unique (order_id, ingredient_key),
+  constraint order_shortfalls_resolution_state check ((status = 'open') = (resolution is null)),
+  constraint order_shortfalls_order_same_org foreign key (organization_id, order_id) references public.orders (organization_id, id) on delete cascade,
+  constraint order_shortfalls_order_same_location foreign key (order_id, location_id) references public.orders (id, location_id) on delete cascade,
+  constraint order_shortfalls_item_same_org foreign key (organization_id, inventory_item_id) references public.inventory_items (organization_id, id) on delete set null (inventory_item_id)
+);
+create index order_shortfalls_open_idx on public.order_inventory_shortfalls (organization_id, location_id) where status = 'open';
+create trigger order_inventory_shortfalls_touch before update on public.order_inventory_shortfalls for each row execute function public.touch_updated_at();
+
+alter table public.order_inventory_shortfalls enable row level security;
+alter table public.order_inventory_shortfalls force row level security;
+create policy order_shortfalls_select on public.order_inventory_shortfalls for select to authenticated
+  using (location_id in (select private.accessible_location_ids()));
+revoke insert, update, delete on public.order_inventory_shortfalls from authenticated, anon;
+grant select on public.order_inventory_shortfalls to authenticated;
+
 -- ---------------------------------------------------------------------------
 -- Guards: protected columns change only inside the authorized operations,
 -- even for privileged connections (defence in depth against code bugs).
@@ -42,8 +80,12 @@ language plpgsql
 set search_path = ''
 as $$
 begin
-  if coalesce(current_setting('cornerops.order_transition', true), '') = 'on'
-     or coalesce(current_setting('cornerops.bypass_order_guard', true), '') = 'on' then
+  -- Session flags are honoured only for trusted roles (the definer operations
+  -- below, seed/simulator connections) — never for client roles, who can set
+  -- arbitrary custom settings.
+  if current_user not in ('authenticated', 'anon')
+     and (coalesce(current_setting('cornerops.order_transition', true), '') = 'on'
+          or coalesce(current_setting('cornerops.bypass_order_guard', true), '') = 'on') then
     return new;
   end if;
   if new.status is distinct from old.status
@@ -81,8 +123,9 @@ set search_path = ''
 as $$
 begin
   if new.quantity is distinct from old.quantity
-     and coalesce(current_setting('cornerops.inventory_write', true), '') <> 'on'
-     and coalesce(current_setting('cornerops.bypass_inventory_guard', true), '') <> 'on' then
+     and (current_user in ('authenticated', 'anon')
+          or (coalesce(current_setting('cornerops.inventory_write', true), '') <> 'on'
+              and coalesce(current_setting('cornerops.bypass_inventory_guard', true), '') <> 'on')) then
     raise exception 'stock levels change only through inventory operations (movements)' using errcode = '42501';
   end if;
   return new;
@@ -125,6 +168,32 @@ as $$
     'cancelledAt', o.cancelled_at, 'cancellationReason', o.cancellation_reason)
 $$;
 
+-- True only for trusted server-side connections (migrations, seed, demo
+-- simulator): no end-user identity and not running as a client role.
+create or replace function private.is_system_caller()
+returns boolean
+language sql stable set search_path = ''
+as $$
+  select auth.uid() is null and coalesce(current_setting('role', true), 'none') not in ('authenticated', 'anon')
+$$;
+
+-- The acting user of an operation. System callers act as NULL; a client role
+-- without an identity is refused instead of being treated as "system".
+create or replace function private.actor_uid()
+returns uuid
+language plpgsql stable set search_path = ''
+as $$
+begin
+  if auth.uid() is not null then
+    return auth.uid();
+  end if;
+  if private.is_system_caller() then
+    return null;
+  end if;
+  raise exception 'authentication required' using errcode = '42501';
+end;
+$$;
+
 -- Emit low / out-of-stock events when a change crosses a stock level.
 create or replace function private.emit_stock_level_events(
   p_org text, p_location text, p_item_id text, p_name text, p_unit text, p_threshold numeric,
@@ -158,11 +227,13 @@ as $$
 declare
   v_order public.orders%rowtype;
   r record;
+  v_qty numeric;
   v_deducted numeric;
   v_after numeric;
   v_shortfalls jsonb := '[]'::jsonb;
   v_lines integer := 0;
 begin
+  -- Serialize per order: concurrent callers wait here, then see the first caller's movements.
   select * into v_order from public.orders where id = p_order_id for update;
   if not found then
     raise exception 'order not found' using errcode = 'P0002';
@@ -170,13 +241,14 @@ begin
   if v_order.accepted_at is null or v_order.status not in ('accepted', 'preparing', 'ready', 'picked_up', 'completed') then
     raise exception 'inventory is consumed only for accepted orders (order is %)', v_order.status using errcode = '23514';
   end if;
-  if exists (select 1 from public.inventory_movements m where m.order_id = p_order_id and m.type = 'usage') then
-    return 0;  -- already consumed (idempotent)
+  if exists (select 1 from public.inventory_movements m where m.order_id = p_order_id and m.type = 'usage')
+     or exists (select 1 from public.order_inventory_shortfalls s where s.order_id = p_order_id) then
+    return 0;  -- already consumed (idempotent; also guarded by unique indexes)
   end if;
 
   perform set_config('cornerops.inventory_write', 'on', true);
   for r in
-    select u.ingredient_key, u.demand, ii.id as item_id, ii.name, ii.unit, ii.threshold, ii.quantity
+    select u.ingredient_key, u.demand, ii.id as item_id, ii.name, ii.unit, ii.threshold
     from (
       select rcp.ingredient_key, sum(rcp.quantity * oi.quantity) as demand
       from public.order_items oi
@@ -188,14 +260,16 @@ begin
     order by u.ingredient_key
   loop
     if r.item_id is null then
-      -- Ingredient not stocked at this location: demand is recorded, not ignored.
-      v_shortfalls := v_shortfalls || jsonb_build_object('ingredientKey', r.ingredient_key, 'requested', r.demand, 'deducted', 0, 'shortfall', r.demand, 'tracked', false);
+      -- Ingredient not stocked at this location: the demand is recorded as unmet, never ignored.
+      insert into public.order_inventory_shortfalls (organization_id, location_id, order_id, inventory_item_id, ingredient_key, unit,
+                                                     requested_quantity, consumed_quantity, unmet_quantity)
+      values (v_order.organization_id, v_order.location_id, p_order_id, null, r.ingredient_key, null, r.demand, 0, r.demand);
+      v_shortfalls := v_shortfalls || jsonb_build_object('ingredientKey', r.ingredient_key, 'requested', r.demand, 'consumed', 0, 'unmet', r.demand, 'tracked', false);
       continue;
     end if;
-    perform 1 from public.inventory_items where id = r.item_id for update;
-    select quantity into r.quantity from public.inventory_items where id = r.item_id;
-    v_deducted := least(r.quantity, r.demand);
-    v_after := r.quantity - v_deducted;
+    select quantity into v_qty from public.inventory_items where id = r.item_id for update;
+    v_deducted := least(v_qty, r.demand);
+    v_after := v_qty - v_deducted;
     update public.inventory_items set quantity = v_after where id = r.item_id;
     insert into public.inventory_movements (id, organization_id, location_id, inventory_item_id, type, quantity, requested_quantity, shortfall_quantity,
                                             note, order_id, actor_user_id, actor_label, reason)
@@ -203,11 +277,14 @@ begin
             -v_deducted, r.demand, r.demand - v_deducted, v_order.order_number, p_order_id, p_actor, p_label, 'order_accepted');
     v_lines := v_lines + 1;
     if r.demand > v_deducted then
+      insert into public.order_inventory_shortfalls (organization_id, location_id, order_id, inventory_item_id, ingredient_key, unit,
+                                                     requested_quantity, consumed_quantity, unmet_quantity)
+      values (v_order.organization_id, v_order.location_id, p_order_id, r.item_id, r.ingredient_key, r.unit, r.demand, v_deducted, r.demand - v_deducted);
       v_shortfalls := v_shortfalls || jsonb_build_object('inventoryItemId', r.item_id, 'ingredientKey', r.ingredient_key, 'name', r.name, 'unit', r.unit,
-                                                         'requested', r.demand, 'deducted', v_deducted, 'shortfall', r.demand - v_deducted, 'tracked', true);
+                                                         'requested', r.demand, 'consumed', v_deducted, 'unmet', r.demand - v_deducted, 'tracked', true);
     end if;
     perform private.emit_stock_level_events(v_order.organization_id, v_order.location_id, r.item_id, r.name, r.unit, r.threshold,
-                                            r.quantity, v_after, p_actor, p_label, jsonb_build_object('causedByOrder', v_order.order_number));
+                                            v_qty, v_after, p_actor, p_label, jsonb_build_object('causedByOrder', v_order.order_number));
   end loop;
   perform set_config('cornerops.inventory_write', 'off', true);
 
@@ -219,7 +296,7 @@ begin
     values (v_order.organization_id, v_order.location_id, p_actor, p_label, 'inventory.shortfall', 'order', p_order_id,
             jsonb_build_object('lines', v_shortfalls), jsonb_build_object('orderNumber', v_order.order_number));
   end if;
-  return v_lines;
+  return v_lines + jsonb_array_length(v_shortfalls);
 end;
 $$;
 
@@ -234,17 +311,19 @@ security definer
 set search_path = ''
 as $$
 declare
+  v_uid uuid;
   v_location text;
   v_lines integer;
 begin
+  v_uid := private.actor_uid();
   select o.location_id into v_location from public.orders o where o.id = p_order_id;
   if not found then
     raise exception 'order not found' using errcode = 'P0002';
   end if;
-  if auth.uid() is not null and not private.can_access_location(v_location) then
+  if v_uid is not null and not private.can_access_location(v_location) then
     raise exception 'order not found' using errcode = 'P0002';
   end if;
-  v_lines := private.consume_order_inventory(p_order_id, auth.uid(), case when auth.uid() is null then coalesce(p_actor_label, 'system') else 'user' end);
+  v_lines := private.consume_order_inventory(p_order_id, v_uid, case when v_uid is null then coalesce(p_actor_label, 'system') else 'user' end);
   if v_lines = 0 then return; end if;
   return query
     select m.inventory_item_id, ii.ingredient_key, ii.name, m.location_id, ii.unit, ii.threshold,
@@ -271,8 +350,8 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_uid uuid := auth.uid();
-  v_label text := case when auth.uid() is null then coalesce(nullif(p_actor_label, ''), 'system') else 'user' end;
+  v_uid uuid := private.actor_uid();
+  v_label text := case when private.actor_uid() is null then coalesce(nullif(p_actor_label, ''), 'system') else 'user' end;
   v_role text;
   o public.orders%rowtype;
   n public.orders%rowtype;
@@ -308,6 +387,10 @@ begin
   end;
   if v_to is null then
     raise exception 'cannot % an order that is %', replace(p_action, '_', ' '), replace(o.status, '_', ' ') using errcode = '23514';
+  end if;
+  if v_to in ('ready', 'picked_up', 'completed')
+     and exists (select 1 from public.order_inventory_shortfalls sf where sf.order_id = o.id and sf.status = 'open') then
+    raise exception 'resolve the inventory shortfall before marking this order %', replace(v_to, '_', ' ') using errcode = '23514';
   end if;
   if p_sync_status is not null and p_sync_status not in ('synced', 'pending', 'failed') then
     raise exception 'invalid sync status' using errcode = '22023';
@@ -372,8 +455,8 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_uid uuid := auth.uid();
-  v_label text := case when auth.uid() is null then 'system' else 'user' end;
+  v_uid uuid := private.actor_uid();
+  v_label text := case when private.actor_uid() is null then 'system' else 'user' end;
   i public.inventory_items%rowtype;
   t public.inventory_items%rowtype;
   v_signed numeric;
@@ -465,6 +548,113 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- Explicit shortfall resolution (never automatic)
+--   reconcile_from_stock : deduct now-available stock for the unmet quantity
+--                          (lines with remaining demand stay open)
+--   accept_shortfall     : close the lines without stock changes (substitution,
+--                          omitted ingredient, comp) — a note is mandatory
+
+create or replace function public.resolve_order_shortfall(p_order_id text, p_method text, p_note text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_uid uuid := private.actor_uid();
+  v_label text := case when private.actor_uid() is null then 'system' else 'user' end;
+  o public.orders%rowtype;
+  l record;
+  v_qty numeric;
+  v_take numeric;
+  v_threshold numeric;
+  v_name text;
+  v_unit text;
+  v_note text := nullif(btrim(coalesce(p_note, '')), '');
+  v_before jsonb;
+  v_after jsonb;
+  v_resolved integer := 0;
+  v_open integer;
+begin
+  if p_method not in ('reconcile_from_stock', 'accept_shortfall') then
+    raise exception 'invalid resolution method' using errcode = '22023';
+  end if;
+  if p_method = 'accept_shortfall' and v_note is null then
+    raise exception 'a note is required to accept a shortfall' using errcode = '22023';
+  end if;
+  if length(coalesce(v_note, '')) > 300 then
+    raise exception 'note too long' using errcode = '22023';
+  end if;
+
+  select * into o from public.orders where id = p_order_id for update;
+  if not found then
+    raise exception 'order not found' using errcode = 'P0002';
+  end if;
+  if v_uid is not null then
+    if not private.can_access_location(o.location_id) then
+      raise exception 'order not found' using errcode = 'P0002';
+    end if;
+    if coalesce(private.member_role(o.organization_id), '') not in ('OWNER', 'ADMIN', 'OPERATIONS_MANAGER', 'BRANCH_MANAGER') then
+      raise exception 'your role cannot resolve inventory shortfalls' using errcode = '42501';
+    end if;
+  end if;
+
+  select coalesce(jsonb_agg(to_jsonb(s) - 'created_at' - 'updated_at' order by s.ingredient_key), '[]'::jsonb) into v_before
+    from public.order_inventory_shortfalls s where s.order_id = o.id and s.status = 'open';
+  if jsonb_array_length(v_before) = 0 then
+    return jsonb_build_object('resolved', 0, 'open', 0);  -- nothing to do (idempotent)
+  end if;
+
+  perform set_config('cornerops.inventory_write', 'on', true);
+  for l in select * from public.order_inventory_shortfalls s where s.order_id = o.id and s.status = 'open' order by s.ingredient_key for update loop
+    if p_method = 'accept_shortfall' then
+      update public.order_inventory_shortfalls set status = 'resolved', resolution = 'accepted_shortfall', resolution_note = v_note,
+             resolved_by = v_uid, resolved_at = now() where id = l.id;
+      v_resolved := v_resolved + 1;
+      continue;
+    end if;
+    if l.inventory_item_id is null then
+      continue;  -- untracked ingredient: cannot be reconciled from stock
+    end if;
+    select quantity, threshold, name, unit into v_qty, v_threshold, v_name, v_unit from public.inventory_items where id = l.inventory_item_id for update;
+    v_take := least(v_qty, l.unmet_quantity);
+    if v_take <= 0 then
+      continue;
+    end if;
+    update public.inventory_items set quantity = v_qty - v_take where id = l.inventory_item_id;
+    insert into public.inventory_movements (id, organization_id, location_id, inventory_item_id, type, quantity, requested_quantity, shortfall_quantity,
+                                            note, order_id, actor_user_id, actor_label, reason)
+    values ('mov_' || replace(gen_random_uuid()::text, '-', ''), o.organization_id, o.location_id, l.inventory_item_id, 'adjustment',
+            -v_take, l.unmet_quantity, l.unmet_quantity - v_take, coalesce(v_note, o.order_number), o.id, v_uid, v_label, 'shortfall_reconciliation');
+    perform private.emit_stock_level_events(o.organization_id, o.location_id, l.inventory_item_id, v_name, v_unit, v_threshold,
+                                            v_qty, v_qty - v_take, v_uid, v_label, jsonb_build_object('causedByOrder', o.order_number));
+    if l.unmet_quantity - v_take <= 0 then
+      update public.order_inventory_shortfalls set consumed_quantity = consumed_quantity + v_take, unmet_quantity = 0, status = 'resolved',
+             resolution = 'reconciled_from_stock', resolution_note = v_note, resolved_by = v_uid, resolved_at = now() where id = l.id;
+      v_resolved := v_resolved + 1;
+    else
+      update public.order_inventory_shortfalls set consumed_quantity = consumed_quantity + v_take, unmet_quantity = unmet_quantity - v_take where id = l.id;
+    end if;
+  end loop;
+  perform set_config('cornerops.inventory_write', 'off', true);
+
+  select count(*)::int into v_open from public.order_inventory_shortfalls s where s.order_id = o.id and s.status = 'open';
+  select coalesce(jsonb_agg(to_jsonb(s) - 'created_at' - 'updated_at' order by s.ingredient_key), '[]'::jsonb) into v_after
+    from public.order_inventory_shortfalls s where s.order_id = o.id;
+
+  insert into public.domain_events (organization_id, location_id, type, aggregate_type, aggregate_id, payload, actor_user_id, actor_label)
+  values (o.organization_id, o.location_id, 'inventory.shortfall_resolved', 'order', o.id,
+          jsonb_build_object('orderNumber', o.order_number, 'method', p_method, 'resolvedLines', v_resolved, 'openLines', v_open), v_uid, v_label);
+  insert into public.audit_logs (organization_id, location_id, actor_user_id, actor_label, action, entity_type, entity_id, before_data, after_data, metadata)
+  values (o.organization_id, o.location_id, v_uid, v_label, 'inventory.shortfall_resolved', 'order', o.id,
+          jsonb_build_object('lines', v_before), jsonb_build_object('lines', v_after),
+          jsonb_build_object('orderNumber', o.order_number, 'method', p_method, 'note', v_note));
+
+  return jsonb_build_object('resolved', v_resolved, 'open', v_open);
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Privileges: no direct writes to operational tables by application users.
 
 revoke insert, update, delete on public.orders, public.order_items, public.kitchen_tickets, public.customers,
@@ -477,11 +667,15 @@ drop policy if exists inventory_items_write on public.inventory_items;
 drop policy if exists inventory_movements_insert on public.inventory_movements;
 drop policy if exists audit_logs_insert on public.audit_logs;
 
+revoke all on function private.is_system_caller(), private.actor_uid() from public, anon, authenticated;
+revoke all on function private.member_role(text), private.stock_level(numeric, numeric), private.order_lifecycle(public.orders) from public, anon;
 revoke all on function private.consume_order_inventory(text, uuid, text), private.emit_stock_level_events(text, text, text, text, text, numeric, numeric, numeric, uuid, text, jsonb),
   private.guard_order_update(), private.guard_inventory_update() from public, authenticated, anon;
 revoke all on function public.apply_order_transition(text, text, text, text, jsonb, text, jsonb),
-  public.apply_order_inventory_usage(text, text), public.record_inventory_movement(text, text, numeric, text, text) from public, anon;
+  public.apply_order_inventory_usage(text, text), public.record_inventory_movement(text, text, numeric, text, text),
+  public.resolve_order_shortfall(text, text, text) from public, anon;
 grant execute on function public.apply_order_transition(text, text, text, text, jsonb, text, jsonb),
-  public.apply_order_inventory_usage(text, text), public.record_inventory_movement(text, text, numeric, text, text) to authenticated;
+  public.apply_order_inventory_usage(text, text), public.record_inventory_movement(text, text, numeric, text, text),
+  public.resolve_order_shortfall(text, text, text) to authenticated;
 
 commit;
