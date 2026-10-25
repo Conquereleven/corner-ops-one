@@ -131,3 +131,13 @@ describe("event and audit atomicity", () => {
     await expect(system((db) => db`delete from audit_logs where id = ${log.id}`)).rejects.toMatchObject({ status: 403 });
   });
 });
+
+describe("order item storage", () => {
+  it("modifiers are stored as JSON arrays (not JSON strings)", async () => {
+    const [r] = await system((db) => db`select count(*)::int as bad from order_items where jsonb_typeof(modifiers) <> 'array'`);
+    expect(r.bad).toBe(0);
+    const order = await freshDemoOrder("loc_marina");
+    const [types] = await system((db) => db`select array_agg(distinct jsonb_typeof(modifiers)) as t from order_items where order_id = ${order.id}`);
+    expect(types.t).toEqual(["array"]);
+  });
+});

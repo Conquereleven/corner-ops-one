@@ -24,6 +24,7 @@ import { ErrorState, PageSkeleton } from "@/components/shared/states";
 import { RelativeTime } from "@/components/shared/time";
 import { useLocationName, useOverview } from "@/hooks/queries";
 import { useLocationScope } from "@/hooks/use-location-scope";
+import { useSession } from "@/hooks/use-session";
 import { CHANNEL_THEME } from "@/lib/channel-theme";
 import { formatAED, formatMinutes, formatNumber, formatPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -32,13 +33,14 @@ export function OverviewView() {
   const { data, isLoading, error, refetch } = useOverview();
   const { scope, setScope } = useLocationScope();
   const locationName = useLocationName();
+  const session = useSession();
 
   const header = (
     <PageHeader
       title="Command Center"
       description={
         <>
-          Casa Norte Mexican Kitchen · {scope === "all" ? "All locations" : locationName(scope)} · live across every channel
+          {session.organization.name} · {scope === "all" ? "All locations" : locationName(scope)} · live across every channel
         </>
       }
       actions={
@@ -204,7 +206,7 @@ export function OverviewView() {
           </div>
         </Panel>
 
-        <Panel title="Operational alerts" description={`${data.alertCount} open`} bodyClassName="p-0" action={<Link href="/ai" className="text-xs font-medium text-muted-foreground hover:text-foreground">AI briefing</Link>}>
+        <Panel title="Operational alerts" description={`${data.alertCount} open`} bodyClassName="p-0" action={session.permissions.includes("ai.view") ? <Link href="/ai" className="text-xs font-medium text-muted-foreground hover:text-foreground">AI briefing</Link> : null}>
           {data.alerts.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-muted-foreground">No open alerts.</p>
           ) : (

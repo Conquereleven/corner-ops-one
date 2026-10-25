@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Building2, FlaskConical, Gauge, Plug, RotateCcw, Timer, Users } from "lucide-react";
+import { Bot, Building2, FlaskConical, Gauge, Plug, RotateCcw, Timer } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ChannelMark } from "@/components/shared/channel-badge";
@@ -21,44 +21,62 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import type { ChannelEconomics, OrderChannel } from "@/domain/channels/types";
-import { useResetDemo, useSettings, useUpdateSettings } from "@/hooks/queries";
+import { useResetDemo, useSettings, useUpdateOrganization, useUpdateSettings } from "@/hooks/queries";
+import { ROLE_LABEL } from "@/domain/auth/permissions";
 import { CHANNEL_THEME } from "@/lib/channel-theme";
-import { formatNumber } from "@/lib/format";
 import type { SettingsData } from "@/server/services/settings";
-
-const ROLE_LABEL = { owner: "Owner", general_manager: "General manager", branch_manager: "Branch manager", kitchen_manager: "Kitchen manager" } as const;
+import { useCan, useSession } from "@/hooks/use-session";
+import { ActivityPanel } from "./activity-panel";
+import { LocationsPanel } from "./locations-panel";
+import { TeamPanel } from "./team-panel";
 
 export function SettingsView() {
   const { data, isLoading, error, refetch } = useSettings();
+  const canViewTeam = useCan("team.view");
+  const canViewAudit = useCan("audit.view");
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (isLoading || !data) return <PageSkeleton />;
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Settings" description="Workspace, kitchen targets, channel economics, integrations and demo simulation." />
+      <PageHeader title="Settings" description="Organization, locations, team, kitchen targets, channel economics and integrations." />
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <WorkspacePanel data={data} />
-        <SlaPanel key={JSON.stringify(data.settings.sla)} sla={data.settings.sla} />
-        <DemoPanel data={data} />
+        <LocationsPanel />
+        {canViewTeam ? <TeamPanel /> : null}
+        <SlaPanel key={JSON.stringify(data.settings.sla)} sla={data.settings.sla} canManage={data.canManage} />
+        {data.simulation ? <DemoPanel data={data} /> : null}
         <IntegrationsPanel data={data} />
-        <EconomicsPanel key={JSON.stringify(data.settings.economics)} economics={data.settings.economics} />
-        <TeamPanel data={data} />
+        <EconomicsPanel key={JSON.stringify(data.settings.economics)} economics={data.settings.economics} canManage={data.canManage} />
+        {canViewAudit ? <ActivityPanel /> : null}
       </div>
     </div>
   );
 }
 
 function WorkspacePanel({ data }: { data: SettingsData }) {
+  const session = useSession();
+  const canEdit = useCan("organization.manage");
+  const update = useUpdateOrganization();
+  const [name, setName] = useState(data.organization.name);
   const rows = [
-    ["Organization", data.organization.name],
     ["Restaurant", data.restaurant.name],
     ["Currency", data.organization.currency],
     ["Timezone", data.organization.timezone],
-    ["Tenant ID", data.organization.id],
-    ["Restaurant ID", data.restaurant.id],
+    ["Your role", ROLE_LABEL[session.role]],
+    ["Organization ID", data.organization.id],
+    ["Environment", data.organization.isDemo ? "Demo Workspace" : "Production workspace"],
   ];
   return (
-    <Panel title={<Title icon={Building2}>Workspace</Title>} description="Multi-tenant by design: every record carries organization and location IDs.">
+    <Panel title={<Title icon={Building2}>Organization</Title>} description="Every record is scoped to this organization; access is enforced by membership and Row Level Security.">
+      <div className="mb-3 flex items-center gap-2">
+        <Input className="h-8 max-w-72" value={name} onChange={(e) => setName(e.target.value)} disabled={!canEdit} aria-label="Organization name" />
+        {canEdit && name.trim() !== data.organization.name ? (
+          <Button size="sm" disabled={name.trim().length < 2 || update.isPending} onClick={() => update.mutate({ name: name.trim() }, { onSuccess: () => window.location.reload() })}>
+            Rename
+          </Button>
+        ) : null}
+      </div>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
         {rows.map(([k, v]) => (
           <div key={k}>
@@ -71,7 +89,7 @@ function WorkspacePanel({ data }: { data: SettingsData }) {
   );
 }
 
-function SlaPanel({ sla }: { sla: SettingsData["settings"]["sla"] }) {
+function SlaPanel({ sla, canManage }: { sla: SettingsData["settings"]["sla"]; canManage: boolean }) {
   const update = useUpdateSettings();
   const [form, setForm] = useState({
     acceptTargetMinutes: String(sla.acceptTargetMinutes),
@@ -109,7 +127,7 @@ function SlaPanel({ sla }: { sla: SettingsData["settings"]["sla"] }) {
         {field("warningPct", "Warn at", "% of target")}
       </div>
       <div className="mt-3 flex justify-end">
-        <Button size="sm" onClick={save} disabled={update.isPending}>
+        <Button size="sm" onClick={save} disabled={!canManage || update.isPending}>
           Save targets
         </Button>
       </div>
@@ -155,8 +173,8 @@ function DemoPanel({ data }: { data: SettingsData }) {
         <div className="rounded-lg border bg-muted/40 p-2.5">
           <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Recent simulation events</div>
           <ul className="max-h-40 space-y-1 overflow-y-auto">
-            {data.simulation.events.length === 0 ? <li className="text-xs text-muted-foreground">No events yet.</li> : null}
-            {data.simulation.events.map((e) => (
+            {(data.simulation?.events ?? []).length === 0 ? <li className="text-xs text-muted-foreground">No events yet.</li> : null}
+            {(data.simulation?.events ?? []).map((e) => (
               <li key={e.id} className="flex gap-2 text-xs">
                 <RelativeTime iso={e.at} className="w-16 shrink-0 text-muted-foreground" />
                 <span className="truncate">{e.message}</span>
@@ -166,7 +184,7 @@ function DemoPanel({ data }: { data: SettingsData }) {
         </div>
         <div className="flex items-center justify-between border-t pt-3">
           <span className="text-xs text-muted-foreground">
-            {formatNumber(data.simulation.orderCount)} orders in store · seeded <RelativeTime iso={data.simulation.seededAt} />
+            Simulated data only — isolated from production organizations.
           </span>
           <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>
             <RotateCcw /> Reset demo data
@@ -178,7 +196,7 @@ function DemoPanel({ data }: { data: SettingsData }) {
           <AlertDialogHeader>
             <AlertDialogTitle>Regenerate demo data?</AlertDialogTitle>
             <AlertDialogDescription>
-              All orders, stock movements and settings return to the seeded state anchored to the current time. Actions taken during this session are discarded.
+              Restores the Casa Norte demo to its initial state: orders, stock, menu, channels, settings and the demo activity log. Production organizations are never affected.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -244,7 +262,7 @@ function IntegrationsPanel({ data }: { data: SettingsData }) {
   );
 }
 
-function EconomicsPanel({ economics }: { economics: Record<OrderChannel, ChannelEconomics> }) {
+function EconomicsPanel({ economics, canManage }: { economics: Record<OrderChannel, ChannelEconomics>; canManage: boolean }) {
   const update = useUpdateSettings();
   const [form, setForm] = useState(() =>
     Object.fromEntries(
@@ -318,30 +336,9 @@ function EconomicsPanel({ economics }: { economics: Record<OrderChannel, Channel
         </table>
       </div>
       <div className="flex justify-end border-t px-4 py-2.5">
-        <Button size="sm" onClick={save} disabled={update.isPending}>
+        <Button size="sm" onClick={save} disabled={!canManage || update.isPending}>
           Save economics
         </Button>
-      </div>
-    </Panel>
-  );
-}
-
-function TeamPanel({ data }: { data: SettingsData }) {
-  return (
-    <Panel className="xl:col-span-2" title={<Title icon={Users}>Team</Title>} description="Roles are modelled for future permissions; v0.1 signs in as the owner." bodyClassName="p-0">
-      <div className="relative overflow-x-auto">
-      <table className="w-full min-w-[560px] text-sm">
-        <tbody className="divide-y">
-          {data.users.map((u) => (
-            <tr key={u.id}>
-              <td className="px-4 py-2 font-medium">{u.name}</td>
-              <td className="px-3 py-2 text-muted-foreground">{u.email}</td>
-              <td className="px-3 py-2">{ROLE_LABEL[u.role]}</td>
-              <td className="px-4 py-2 text-xs text-muted-foreground">{u.locationIds === "all" ? "All locations" : `${u.locationIds.length} location`}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
       </div>
     </Panel>
   );

@@ -4,16 +4,17 @@ import { Suspense } from "react";
 import { InventoryView } from "@/components/inventory/inventory-view";
 import { PageSkeleton } from "@/components/shared/states";
 import { queryKeys } from "@/lib/query-keys";
-import { getServerScope, prefetch } from "@/server/prefetch";
+import { Forbidden } from "@/components/shared/forbidden";
+import { loadPage } from "@/server/page";
 import { getInventory } from "@/server/services/inventory";
 
 export const metadata: Metadata = { title: "Inventory" };
 
 export default async function InventoryPage() {
-  const scope = await getServerScope();
-  const state = await prefetch([{ queryKey: queryKeys.inventory(scope), queryFn: () => getInventory(scope) }]);
+  const page = await loadPage({ permission: "inventory.view" }, (ctx) => [{ queryKey: queryKeys.inventory(ctx.scope.key), queryFn: () => getInventory(ctx) }]);
+  if ("forbidden" in page) return <Forbidden message={page.forbidden} />;
   return (
-    <HydrationBoundary state={state}>
+    <HydrationBoundary state={page.state}>
       <Suspense fallback={<PageSkeleton />}>
         <InventoryView />
       </Suspense>

@@ -1,17 +1,26 @@
 import { cookies } from "next/headers";
-import { ORG_ID } from "@/server/seed/catalog";
-import { createSessionToken, SESSION_COOKIE, SESSION_TTL_SECONDS } from "@/server/auth/session";
-import { DEMO_USER_ID } from "@/server/services/context";
+import { getAuthProvider } from "@/server/auth";
+import { setLocalSessionCookie } from "@/server/auth/local-provider";
+import { authProviderName, demoConfig } from "@/server/config";
+import { ORG_COOKIE } from "@/server/context/request";
+import { DEMO_ORGANIZATION_ID, ensureDemoWorkspace } from "@/server/demo/workspace";
+import { ConfigurationError } from "@/server/errors";
+import { handle } from "@/server/http";
 
-/** Demo access: issues a signed session for the demo owner account. No passwords in v0.1. */
-export async function POST() {
-  const token = await createSessionToken({ userId: DEMO_USER_ID, organizationId: ORG_ID });
-  (await cookies()).set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: SESSION_TTL_SECONDS,
-  });
-  return Response.json({ ok: true });
-}
+/**
+ * Enter the Demo Workspace (APP_MODE=demo only). Signs in as the shared demo
+ * user — a normal authenticated user whose only membership is the isolated
+ * demo organization. No customer account is created.
+ */
+export const POST = handle(async () => {
+  const { userId } = await ensureDemoWorkspace();
+  const { email, password } = demoConfig();
+  if (authProviderName() === "local") {
+    await setLocalSessionCookie({ id: userId, email, name: "Demo Operator" });
+  } else {
+    if (!password) throw new ConfigurationError("DEMO_USER_PASSWORD is required to enter the Demo Workspace with Supabase Auth.");
+    await getAuthProvider().signInWithPassword(email, password);
+  }
+  (await cookies()).set(ORG_COOKIE, DEMO_ORGANIZATION_ID, { path: "/", sameSite: "lax", httpOnly: true, maxAge: 60 * 60 * 24 * 180 });
+  return { ok: true };
+});

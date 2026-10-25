@@ -16,6 +16,8 @@ export const queryKeys = {
   locations: () => ["locations"] as const,
   directory: () => ["directory"] as const,
   settings: () => ["settings"] as const,
+  team: () => ["team"] as const,
+  activity: () => ["activity"] as const,
   status: (loc: string) => ["status", loc] as const,
 };
 

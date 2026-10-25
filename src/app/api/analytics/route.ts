@@ -1,10 +1,11 @@
 import { analyticsRangeSchema } from "@/domain/analytics/range";
-import { handle, searchParams } from "@/server/http";
 import { getAnalytics } from "@/server/services/analytics";
-import { resolveScope } from "@/server/services/context";
-import { getRuntime } from "@/server/store/runtime";
+import { withAppContext } from "@/server/context/request";
+import { handle, searchParams } from "@/server/http";
+
+const loc = (req: Request) => searchParams(req).get("location");
 
 export const GET = handle(async (req: Request) => {
-  const p = searchParams(req);
-  return getAnalytics(resolveScope(getRuntime(), p.get("location")), analyticsRangeSchema.parse(p.get("range") ?? "7d"));
+  const range = analyticsRangeSchema.parse(searchParams(req).get("range") ?? "7d");
+  return withAppContext({ location: loc(req), strictLocation: true }, (c) => getAnalytics(c, range));
 });

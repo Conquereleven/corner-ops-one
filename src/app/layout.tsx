@@ -7,8 +7,9 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: { default: "CornerOps · Restaurant OS", template: "%s · CornerOps" },
-  description: "One restaurant. Many sales channels. One operating system.",
+  title: { default: "CornerOps One", template: "%s · CornerOps One" },
+  description: "CornerOps One — the unified operating layer for multi-channel restaurant operations. A CornerTech AI product.",
+  applicationName: "CornerOps One",
 };
 
 export const viewport: Viewport = { themeColor: "#fafaf9" };

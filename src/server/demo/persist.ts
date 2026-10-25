@@ -79,7 +79,7 @@ export async function persistWorkspace(db: Db, w: Database) {
     })),
   );
   await insert("orders", w.orders.map(orderRow), 500);
-  await insert("order_items", w.orders.flatMap(orderItemRows));
+  await insert("order_items", w.orders.flatMap((o) => orderItemRows(o, (v) => db.json(v as never))));
   await insert("inventory_movements", w.inventoryMovements.map(movementRow));
 }
 

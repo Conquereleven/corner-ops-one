@@ -13,6 +13,8 @@ import type { OrderDetailData, OrdersData } from "@/server/services/orders";
 import type { OverviewData } from "@/server/services/overview";
 import type { SearchData } from "@/server/services/search";
 import type { SettingsData } from "@/server/services/settings";
+import type { ActivityData, TeamData } from "@/server/services/team";
+import type { Role } from "@/domain/auth/permissions";
 import type { SystemStatusData } from "@/server/services/system";
 import type { AIAnswer } from "@/domain/ai/types";
 import type { AnalyticsRange } from "@/domain/analytics/range";
@@ -248,7 +250,7 @@ export function useInjectOrder() {
 export function useResetDemo() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post("/api/demo", { action: "reset" }),
+    mutationFn: () => api.post("/api/demo", { action: "reset", confirm: "RESET" }),
     onSuccess: () => {
       qc.invalidateQueries();
       toast.success("Demo data regenerated");
@@ -334,5 +336,67 @@ export function useAsk() {
   const { scope } = useLocationScope();
   return useMutation({
     mutationFn: (question: string) => api.post<AIAnswer>(withParams("/api/ai/ask", { location: scope }), { question }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Organization, team, locations, activity
+
+export function useTeam(enabled = true) {
+  return useQuery({ queryKey: queryKeys.team(), queryFn: () => api.get<TeamData>("/api/team"), enabled });
+}
+
+export function useActivity(enabled = true) {
+  return useQuery({ queryKey: queryKeys.activity(), queryFn: () => api.get<ActivityData>("/api/activity"), enabled, refetchInterval: 15000 });
+}
+
+function useTeamMutation<V>(fn: (v: V) => Promise<unknown>, success?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      if (success) toast.success(success);
+      qc.invalidateQueries({ queryKey: queryKeys.team() });
+      qc.invalidateQueries({ queryKey: queryKeys.activity() });
+    },
+    onError: (err: Error) => toast.error("Could not save", { description: err.message }),
+  });
+}
+
+export function useInviteMember() {
+  return useTeamMutation((v: { email: string; role: Role; locationIds: string[] }) => api.post("/api/team", v), "Invitation created");
+}
+
+export function useUpdateMember() {
+  return useTeamMutation((v: { id: string; patch: { role?: Role; status?: "active" | "disabled"; locationIds?: string[] } }) => api.patch(`/api/team/${v.id}`, v.patch), "Member updated");
+}
+
+export function useUpdateOrganization() {
+  return useTeamMutation((v: { name: string }) => api.patch("/api/organization", v), "Organization updated");
+}
+
+export function useCreateLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: Record<string, unknown>) => api.post("/api/locations", v),
+    onSuccess: () => {
+      toast.success("Location added");
+      window.location.reload();
+    },
+    onError: (err: Error) => toast.error("Could not add location", { description: err.message }),
+    onSettled: () => qc.invalidateQueries({ queryKey: queryKeys.activity() }),
+  });
+}
+
+export function useUpdateLocation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; patch: Record<string, unknown> }) => api.patch(`/api/locations/${v.id}`, v.patch),
+    onSuccess: () => {
+      toast.success("Location updated");
+      qc.invalidateQueries({ queryKey: queryKeys.locations() });
+      qc.invalidateQueries({ queryKey: queryKeys.activity() });
+    },
+    onError: (err: Error) => toast.error("Could not update location", { description: err.message }),
   });
 }

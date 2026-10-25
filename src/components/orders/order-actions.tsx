@@ -23,6 +23,7 @@ import {
 import { availableActions, primaryAction, TRANSITIONS, type OrderAction } from "@/domain/orders/state-machine";
 import type { UnifiedOrder } from "@/domain/orders/types";
 import { useOrderAction } from "@/hooks/queries";
+import { useCan } from "@/hooks/use-session";
 import { CHANNEL_THEME } from "@/lib/channel-theme";
 import { cn } from "@/lib/utils";
 
@@ -50,10 +51,12 @@ export function OrderActions({
   stretch?: boolean;
 }) {
   const mutation = useOrderAction();
+  const canProgress = useCan("orders.progress");
+  const canCancelRole = useCan("orders.cancel");
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState(CANCEL_REASONS[0]);
-  const primary = primaryAction(order);
-  const actions = availableActions(order);
+  const primary = canProgress ? primaryAction(order) : null;
+  const actions = availableActions(order).filter((a) => (a === "cancel" ? canCancelRole : canProgress));
   const secondary = actions.filter((a) => a !== primary && a !== "cancel");
   const canCancel = actions.includes("cancel");
   const busy = mutation.isPending;

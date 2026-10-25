@@ -12,6 +12,7 @@ import { primaryAction, TRANSITIONS } from "@/domain/orders/state-machine";
 import type { UnifiedOrder } from "@/domain/orders/types";
 import { useKitchen, useLocationDirectory, useLocationName, useOrderAction } from "@/hooks/queries";
 import { useLocationScope } from "@/hooks/use-location-scope";
+import { useCan } from "@/hooks/use-session";
 import { formatMinutes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { phaseStart, useSla } from "@/components/orders/order-card";
@@ -165,7 +166,8 @@ function Ticket({
   const level = state?.level ?? "normal";
   const p = PRIORITY[level];
   const mutation = useOrderAction();
-  const kitchenAction = primaryAction(order);
+  const canProgress = useCan("orders.progress");
+  const kitchenAction = canProgress ? primaryAction(order) : null;
 
   return (
     <article

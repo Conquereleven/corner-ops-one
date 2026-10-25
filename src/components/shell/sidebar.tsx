@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSystemStatus } from "@/hooks/queries";
+import { useSession } from "@/hooks/use-session";
 import { cn } from "@/lib/utils";
 import { NAV_GROUPS, type NavBadge } from "./nav";
 
@@ -16,7 +17,7 @@ export function BrandMark({ className }: { className?: string }) {
       </svg>
       <div className="leading-none">
         <div className="text-[13px] font-bold tracking-[0.14em]">CORNEROPS</div>
-        <div className="mt-1 text-[11px] font-medium text-muted-foreground">Restaurant OS</div>
+        <div className="mt-1 text-[11px] font-medium text-muted-foreground">One</div>
       </div>
     </div>
   );
@@ -25,12 +26,15 @@ export function BrandMark({ className }: { className?: string }) {
 export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { data: status } = useSystemStatus();
+  const session = useSession();
   const badgeValue = (b?: NavBadge) =>
     !b || !status ? 0 : b === "activeOrders" ? status.activeOrders : b === "newOrders" ? status.newOrders : status.alertCount;
 
   return (
     <nav className="flex flex-col gap-5 px-3" aria-label="Main">
-      {NAV_GROUPS.map((group) => (
+      {NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((i) => session.permissions.includes(i.permission)) }))
+        .filter((group) => group.items.length > 0)
+        .map((group) => (
         <div key={group.label}>
           <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">{group.label}</div>
           <ul className="space-y-0.5">
@@ -72,11 +76,11 @@ export function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 export function Sidebar() {
-  const { data: status } = useSystemStatus();
+  const session = useSession();
   return (
     <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col border-r bg-sidebar lg:flex">
       <div className="flex h-14 items-center px-5">
-        <Link href="/overview" aria-label="CornerOps home">
+        <Link href="/" aria-label="CornerOps One home">
           <BrandMark />
         </Link>
       </div>
@@ -84,9 +88,11 @@ export function Sidebar() {
         <SidebarNav />
       </div>
       <div className="border-t px-5 py-3 text-[11px] leading-relaxed text-muted-foreground">
-        <div className="font-medium text-foreground/80">Casa Norte Mexican Kitchen</div>
-        <div>3 locations · AED · Asia/Dubai</div>
-        {status?.demo.enabled ? <div className="mt-1 text-amber-700">Simulated integrations</div> : null}
+        <div className="truncate font-medium text-foreground/80">{session.organization.name}</div>
+        <div>
+          {session.locations.length} location{session.locations.length === 1 ? "" : "s"} · {session.organization.currency} · {session.organization.timezone}
+        </div>
+        {session.organization.isDemo ? <div className="mt-1 text-amber-700">Demo Workspace · simulated integrations</div> : null}
       </div>
     </aside>
   );

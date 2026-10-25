@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  Building2,
   Bell,
   Boxes,
   Check,
@@ -55,20 +56,24 @@ import {
   useUpdateSettings,
 } from "@/hooks/queries";
 import { useLocationScope } from "@/hooks/use-location-scope";
+import { useSession } from "@/hooks/use-session";
+import { ROLE_LABEL } from "@/domain/auth/permissions";
 import { CHANNEL_THEME } from "@/lib/channel-theme";
 import { cn } from "@/lib/utils";
 import { BrandMark, SidebarNav } from "./sidebar";
 
 export function Topbar() {
+  const session = useSession();
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/70 sm:px-5">
       <MobileNav />
       <LocationSwitcher />
       <SearchCommand />
       <div className="ml-auto flex items-center gap-1.5">
-        <DemoModeControl />
-        <SystemStatus />
-        <Notifications />
+        {session.organization.isDemo ? <DemoBadge /> : null}
+        {session.organization.isDemo && session.permissions.includes("demo.manage") ? <DemoModeControl /> : null}
+        {session.permissions.includes("channels.view") ? <SystemStatus /> : null}
+        {session.permissions.includes("alerts.view") ? <Notifications /> : null}
         <UserMenu />
       </div>
     </header>
@@ -354,7 +359,7 @@ function DemoModeControl() {
         }
       >
         <FlaskConical className="size-3" />
-        <span className="hidden sm:inline">Demo mode</span>
+        <span className="hidden sm:inline">Simulator</span>
         {enabled ? <span className="size-1.5 rounded-full bg-amber-500" /> : null}
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[340px] gap-0 p-0">
@@ -426,12 +431,37 @@ function DemoModeControl() {
   );
 }
 
+/** Unmistakable (but discreet) marker that this is the Demo Workspace, not a production organization. */
+function DemoBadge() {
+  return (
+    <span
+      className="inline-flex h-6 items-center rounded-md bg-amber-500 px-2 text-[10px] font-bold tracking-[0.16em] text-white"
+      title="Demo Workspace — simulated data, isolated from production organizations"
+    >
+      DEMO
+    </span>
+  );
+}
+
+function initials(name: string | null, email: string) {
+  const src = (name ?? email.split("@")[0]).trim();
+  const parts = src.split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "?";
+}
+
 function UserMenu() {
   const router = useRouter();
+  const session = useSession();
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/login");
     router.refresh();
+  };
+  const switchOrg = async (organizationId: string) => {
+    const res = await fetch("/api/session/organization", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ organizationId }) });
+    // Full reload: the client query cache belongs to the previous organization.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    if (res.ok) window.location.assign("/");
   };
   return (
     <DropdownMenu>
@@ -444,19 +474,38 @@ function UserMenu() {
           />
         }
       >
-        LA
+        {initials(session.user.name, session.user.email)}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuGroup>
           <DropdownMenuLabel>
-            <div className="text-sm font-medium text-foreground">Layla Al Mansouri</div>
-            <div className="text-xs font-normal">Owner · CornerOps Demo</div>
+            <div className="truncate text-sm font-medium text-foreground">{session.user.name ?? session.user.email}</div>
+            <div className="truncate text-xs font-normal">
+              {ROLE_LABEL[session.role]} · {session.organization.name}
+            </div>
           </DropdownMenuLabel>
         </DropdownMenuGroup>
+        {session.memberships.length > 1 ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Switch organization</DropdownMenuLabel>
+              {session.memberships.map((m) => (
+                <DropdownMenuItem key={m.organizationId} disabled={m.organizationId === session.organization.id} onClick={() => switchOrg(m.organizationId)}>
+                  <Building2 />
+                  <span className="truncate">{m.organizationName}</span>
+                  {m.isDemo ? <span className="ml-auto text-[10px] font-bold text-amber-600">DEMO</span> : null}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </>
+        ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => router.push("/settings")}>
-          <Settings /> Settings
-        </DropdownMenuItem>
+        {session.permissions.includes("settings.view") ? (
+          <DropdownMenuItem onClick={() => router.push("/settings")}>
+            <Settings /> Settings
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem variant="destructive" onClick={signOut}>
           <LogOut /> Sign out
         </DropdownMenuItem>

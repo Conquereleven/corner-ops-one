@@ -17,7 +17,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (res.status === 401 && typeof window !== "undefined") {
     // Session expired outside React's render/event cycle: hard redirect to sign in.
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-    window.location.href = "/login";
+    window.location.href = "/api/auth/expired";
   }
   const body = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) throw new ApiError(body.error ?? `Request failed (${res.status})`, res.status);

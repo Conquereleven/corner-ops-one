@@ -2,22 +2,20 @@ import { HydrationBoundary } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
 import { OrderDetail } from "@/components/orders/order-detail";
+import { Forbidden } from "@/components/shared/forbidden";
 import { queryKeys } from "@/lib/query-keys";
-import { prefetch } from "@/server/prefetch";
+import { loadPage } from "@/server/page";
 import { getOrder } from "@/server/services/orders";
-import { live } from "@/server/services/context";
 
 export const metadata: Metadata = { title: "Order" };
 
 export default async function OrderPage({ params }: PageProps<"/orders/[id]">) {
   const { id } = await params;
-  const rt = await live();
-  if (!rt.db.ordersById.has(id)) notFound();
-  const state = await prefetch([{ queryKey: queryKeys.order(id), queryFn: () => getOrder(id) }]);
+  const page = await loadPage({ permission: "orders.view" }, (ctx) => [{ queryKey: queryKeys.order(id), queryFn: () => getOrder(ctx, id) }]);
+  if ("forbidden" in page) return <Forbidden message={page.forbidden} />;
   return (
-    <HydrationBoundary state={state}>
+    <HydrationBoundary state={page.state}>
       <div className="mx-auto max-w-5xl">
         <Link href="/orders" className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="size-4" /> Live Orders

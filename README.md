@@ -1,148 +1,184 @@
-# CornerOps · Restaurant OS (v0.1)
+# CornerOps One
 
-> One restaurant. Many sales channels. One operating system.
+> One operation. Every channel.
 
-CornerOps Restaurant OS is an operational command center for restaurants selling through
-Talabat, Deliveroo, Noon Food, Keeta, their own website and WhatsApp. It sits **above** the
-delivery platforms and the POS: every channel feeds one normalized order model, one kitchen
-board, one inventory and one view of what each channel actually earns.
+**CornerOps One** is the unified operating layer for multi-channel restaurant operations. It
+sits above the delivery platforms (Talabat, Deliveroo, Noon Food, Keeta) and owned channels
+(website, WhatsApp): one normalized order model, one kitchen board, one inventory and one view
+of what every channel earns.
 
-The demo tenant is **Casa Norte Mexican Kitchen** (Dubai Marina · Business Bay · JVC), AED, Asia/Dubai.
+CornerOps One is a product of **CornerTech AI**. Proprietary and confidential — all rights reserved.
+
+| | |
+|---|---|
+| Version | **0.2.0 — Production Foundation (in progress)** |
+| Status | Persistence, auth, multi-tenancy, roles, events and audit implemented and tested on local PostgreSQL. **Hosted Supabase integration is prepared but NOT VERIFIED** — see [docs/supabase.md](docs/supabase.md). |
 
 ---
 
-## Run it
+## Quick start (local)
+
+Requirements: Node ≥ 20.9 and PostgreSQL 17 binaries on `PATH` (`initdb`, `pg_ctl`, `psql`). No Docker needed.
 
 ```bash
 npm install
-cp .env.example .env.local        # then set SESSION_SECRET (openssl rand -base64 48)
-npm run dev                       # http://localhost:3000 → "Enter demo workspace"
+cp .env.example .env.local            # set SESSION_SECRET and LOCAL_FIXTURE_PASSWORD
+npm run db:local:start                # project-local Postgres on 127.0.0.1:54329 (data in .local/)
+npm run db:local:reset                # create the database from migrations
+npm run db:seed:demo -- --fixtures    # Demo Workspace + a production-like fixture tenant
+npm run dev                           # http://localhost:3000
 ```
 
-| Script | What it does |
+- **Enter Demo Workspace** on the sign-in page opens the Casa Norte demo (simulated, isolated).
+- Fixture users (local only, password = `LOCAL_FIXTURE_PASSWORD`): `owner@`, `admin@`, `ops@`,
+  `branch@` (Dubai Marina + JVC), `kitchen@` (Dubai Marina) — all `@casanorte.test`, in the
+  organization *Casa Norte Hospitality LLC*.
+
+## Scripts
+
+| Script | Purpose |
 |---|---|
-| `npm run build` / `npm start` | Production build / server |
-| `npm run typecheck` | Route type generation + `tsc --noEmit` |
-| `npm run lint` | ESLint |
-| `npm run db:seed:export` | Regenerates `supabase/seed.sql` from the same generator the app uses |
-| `npm run db:verify` | Spins up a throwaway local Postgres, applies migration + seed, checks counts and RLS isolation |
-
-No Talabat, Deliveroo, Noon or Keeta credentials are needed — every integration runs in **mock mode**.
-
----
-
-## Demo script (≈5 minutes)
-
-1. **Overview** — the Command Center: revenue, orders, AOV, active orders, prep time and cancellation rate vs the same time yesterday; live pipeline; channel health; revenue by channel; the three locations; operational alerts.
-2. The three locations appear in the locations table and the top-bar **location selector** (scopes the whole workspace).
-3. Talabat, Deliveroo, Noon, Keeta, Direct and WhatsApp revenue sit side by side in **Revenue by channel**.
-4. Open **Demo mode** (amber pill, top bar) → pick *Dubai Marina* → **Talabat**. A simulated Talabat payload goes through the Talabat adapter and lands as a UnifiedOrder; a toast announces it.
-5. Click **Open** on the toast (or find it in **Live Orders**).
-6. **Accept** — the status is written back to the (simulated) Talabat API; see *Channel sync* on the order.
-7. **Start preparing**.
-8. Open **Kitchen** — the ticket is in *Preparing* with a live timer and NORMAL / WARNING / CRITICAL priority. *Kitchen display mode* gives a full-screen dark KDS for tablets.
-9. **Mark ready** from the kitchen ticket.
-10. **Mark picked up**.
-11. Back on **Overview** — pipeline, revenue and channel numbers have moved.
-12. **Analytics** — compare channels (revenue, AOV, prep, cancellations), locations, hourly volume, top/bottom products, marketplace concentration.
-13. **Profitability** — estimated contribution margin per channel: gross sales → discounts → commission → delivery/payment fees → food cost → contribution. *Which platform actually makes me money?*
-14. **Inventory** — stock alerts (low / critical / out), run-out forecasts, and menu items blocked by stock.
-15. **AI Operations** — daily briefing, risks, opportunities, suggested actions, and *Ask CornerOps*.
-
-Orders injected from the Demo mode panel are never auto-progressed by the simulator, so the presenter stays in control. *Settings → Demo mode → Reset demo data* regenerates everything anchored to the current time.
+| `npm run dev` / `build` / `start` | Next.js development, production build, production server |
+| `npm run typecheck` · `npm run lint` | Type check (with route typegen) · ESLint |
+| `npm test` | Unit + integration tests (Vitest) against a freshly migrated local Postgres |
+| `npm run db:local:start` · `db:local:stop` · `db:local:reset` | Manage the project-local Postgres |
+| `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` (from `.env.local`) |
+| `npm run db:migrate:deploy` | Same, using platform environment variables (Railway pre-deploy) |
+| `npm run db:seed:demo [-- --fixtures]` | Seed the Demo Workspace (and local fixture tenant) |
+| `npm run db:verify` | Run the database integration suite |
 
 ---
 
 ## Architecture
 
-A modular monolith on **Next.js 16 (App Router) · TypeScript · Tailwind v4 · shadcn/ui (Base UI) · TanStack Query · Zod · Recharts**.
+```
+Channels (Talabat · Deliveroo · Noon · Keeta · Website · WhatsApp)
+   ↓  adapters (src/adapters/*: schema → normalize → mock)       — no platform schema leaks past here
+UnifiedOrder (src/domain)                                         — pure domain logic
+   ↓
+Services (src/server/services)  ← AppContext (user, organization, membership, permissions, locations)
+   ↓
+Repositories (src/server/repositories)        Event engine → domain_events (outbox)   Audit → audit_logs
+   ↓
+PostgreSQL (Supabase) with Row Level Security
+```
 
-```
-Talabat ─────┐
-Deliveroo ───┤
-Noon Food ───┤   Channel adapters         normalizeOrder()        CornerOps core
-Keeta ───────┼─► (mock today; live  ────► UnifiedOrder ─────────► orders · kitchen · inventory
-Website ─────┤    later, same interface)   (Zod-validated          alerts · analytics · AI
-WhatsApp ────┘                              payloads)
-```
+- **UI → API routes → services → repositories → Postgres.** Components never touch the database.
+- **AppContext** is derived server-side from the session (`src/server/context`), never from
+  client-supplied organization/location/role ids.
+- **Every request is a transaction as the `authenticated` role** with the user's claims, so
+  RLS applies to all reads and writes. Privileged "system" transactions are limited to the
+  demo simulator/seed, migrations and the health check.
+- **Order status changes go through one function** (`transitionOrder`): lock order → state
+  machine → inventory usage (once) → channel write-back → event → audit, atomically.
+- **Ingestion is idempotent** on `(organization_id, channel_id, external_order_id)`.
+- The **kitchen board** reads the same order rows; `kitchen_tickets` is kept in sync by trigger.
 
 ```
 src/
-  domain/          Pure business logic — no React, no I/O
-    orders/          UnifiedOrder model, state machine, SLA engine
-    channels/        channel catalog, connection & economics types
-    menu/ inventory/ recipes, stock status, availability, run-out forecasts
-    analytics/       metrics, date ranges, channel profitability
-    alerts/          alert engine (stable ids per condition)
-    ai/              OperationsSnapshot, briefing builder, provider interface + deterministic analyst
-  adapters/        One folder per channel: external schema (Zod) · normalize.ts · mock.ts
-    shared/          MockChannelAdapter base, UnifiedOrder builder
-    registry.ts      mock vs live resolution (live throws IntegrationUnavailableError in v0.1)
+  domain/            pure logic: orders, auth/permissions, analytics, inventory, alerts, AI, events
+  adapters/          channel adapters (mock today; live adapters implement the same interface)
   server/
-    services/        Use cases called by route handlers and server-side prefetching
-    simulation/      Demo engine: traffic generator, auto-progression, channel incidents
-    seed/            Casa Norte catalog + deterministic generator (30 days of history)
-    store/           In-memory demo database, mock platform backend
-    auth/            Signed demo session (HMAC via Web Crypto)
-  app/
-    (app)/           Workspace pages (server components prefetch → client views hydrate)
-    (display)/kds    Full-screen kitchen display
-    api/             Route handlers — Zod-validated inputs, typed JSON errors
-  components/      UI by module (dashboard, orders, kitchen, menu, inventory, channels, analytics, ai, …)
-  hooks/           TanStack Query hooks (polling, optimistic order actions)
+    context/         AppContext resolution, scope, request wrapper
+    repositories/    Postgres repositories (orders, menu, inventory, channels, organizations,
+                     locations, memberships, customers, alerts, events, audit)
+    services/        use cases (orders, kitchen, menu, inventory, channels, analytics, AI, team…)
+    demo/            Demo Workspace: seed, reset, persisted simulator, mock platform backend
+    auth/            auth providers (Supabase Auth; local development stand-in)
+    db/              connection pool, user/system transactions
+  app/               Next.js routes: (app) workspace, (display) KDS, api/*, login, signup, onboarding
 supabase/
-  migrations/      Postgres schema with RLS tenant isolation
-  seed.sql         Generated demo dataset
+  migrations/        versioned SQL migrations (apply in order)
+  local/             LOCAL ONLY: emulation of Supabase roles + auth schema for dev/tests
+tests/               unit/ and integration/ (Vitest)
+docs/                RLS, Supabase, events & audit, credentials, Railway
 ```
 
-### Key design decisions
+## Environments and modes
 
-- **The UI only ever sees `UnifiedOrder`.** Each adapter owns its platform's payload shape
-  (Talabat decimals, Deliveroo minor units, Noon epoch-ms, Keeta unix-seconds + fils, WhatsApp
-  carts without totals) and maps it with a pure `normalize*Order` function. Platform-specific
-  fields stay in `metadata`.
-- **Mock vs live is explicit.** `MockChannelAdapter` talks to a simulated platform (inbox,
-  connection state, latency, write-back vocabulary). `createLiveAdapter()` throws — nothing
-  pretends to be connected. Orders, logs and badges are labelled *Mock integration* / *Demo data*.
-- **Seeded orders go through the adapters too.** The generator fabricates each historical order
-  as a platform payload and normalizes it, so seed data exercises the same path as live traffic.
-- **One transition path.** Staff actions and the simulator both call `transitionOrder()`:
-  state machine → side effects (inventory usage, courier) → channel write-back → sync status.
-  The state machine is pure, so the client applies the same transition optimistically.
-- **Multi-location and multi-tenant by design.** Every entity carries `organization_id` and,
-  where relevant, `location_id`. The location scope (`All locations` or one branch) is a cookie
-  shared by server prefetching and client queries.
-- **Server-first data.** Pages are server components that call services directly and dehydrate
-  into TanStack Query; client components then poll for live updates. Secrets never reach the client.
-- **Grounded AI.** Providers receive a structured `OperationsSnapshot` built from live data.
-  v0.1 ships a deterministic analyst; an LLM provider can implement `OperationsAIProvider` and be
-  registered in `server/services/ai.ts` with its key held server-side.
+| Variable | Values | Effect |
+|---|---|---|
+| `APP_MODE` | `demo` · `production` | `production` disables the Demo Workspace entry, the simulator and access to demo organizations |
+| `APP_ENV` | `development` · `test` · `staging` · `production` | `staging`/`production` refuse the local auth stand-in |
+| `AUTH_PROVIDER` | `supabase` · `local` | Supabase Auth, or the local development stand-in |
 
-### Data & persistence
+Full inventory: [.env.example](.env.example) and [docs/deployment/railway.md](docs/deployment/railway.md).
 
-v0.1 runs on an **in-memory store** seeded at boot (deterministic, anchored to "now"), which keeps
-the live demo self-contained. The Postgres schema in `supabase/migrations` mirrors it table for
-table (organizations, users, restaurants, locations, channels, channel_connections, orders,
-order_items, menu_categories, menu_items, menu_channel_mappings, inventory_items,
-inventory_movements, customers, kitchen_tickets, alerts, daily_metrics, …) with Row Level
-Security scoped to `app_metadata.organization_id`. `npm run db:verify` applies it plus the
-generated seed to a local Postgres and checks tenant isolation.
+## Authentication
 
-**Next step:** a Supabase-backed repository behind the same service layer. Until then, state
-lives in one server process and resets on restart — fine for demos, not for multi-instance
-production.
+- **Supabase Auth** owns identity (`auth.users`); CornerOps One owns membership and
+  authorization. Email + password is implemented; magic link / Google / Microsoft can be added
+  behind the same `AuthProvider` interface.
+- **Local development** uses `AUTH_PROVIDER=local`: bcrypt hashes in the local `auth.users`
+  table and a signed cookie. Never used in staging/production.
+- Expired, revoked or deleted sessions are cleared and sent back to sign-in.
+- New users without an organization go to **onboarding** and become its OWNER.
 
-### Metric definitions
+## Roles
 
-- **Revenue** = net food sales (subtotal − discounts), excluding VAT and delivery fees; cancelled orders excluded.
-- **Prep time** = accepted → ready. **Cancellation rate** = cancelled ÷ all orders placed.
-- "Today" comparisons are against the **same time yesterday** (Asia/Dubai).
-- **Profitability** is an estimate from order data plus contract terms editable in *Settings → Channel economics*.
+| Role | Scope | Can |
+|---|---|---|
+| OWNER | all locations | everything, including granting/transferring OWNER |
+| ADMIN | all locations | everything except OWNER grants |
+| OPERATIONS_MANAGER | all locations | operations, menu, channels, analytics, profitability, location details; not org settings/team |
+| BRANCH_MANAGER | assigned locations | operations, inventory, analytics for their branches; no profitability/settings/team |
+| KITCHEN_STAFF | assigned locations | Kitchen + order progress (accept → ready → picked up); no cancellations, analytics, settings |
 
----
+The matrix lives in `src/domain/auth/permissions.ts`; UI hides what a role can't do, the server
+enforces it, and RLS enforces it again. "All locations" means *all locations you can access*.
 
-## Not in v0.1 (by design)
+## Row Level Security
 
-Real Talabat / Deliveroo / Noon / Keeta integrations, real payments, accounting, payroll/HR,
-procurement, driver fleet, full POS, ERP. The adapter, economics and inventory models are built
-to take these on later.
+Membership-based policies on every tenant table, location-scoped where relevant, append-only
+audit log, no `anon` access. Design and verification: **[docs/security/rls.md](docs/security/rls.md)**.
+
+## Demo Workspace vs production
+
+- The demo organization (`is_demo = true`, *CornerOps Demo / Casa Norte Mexican Kitchen*) is the
+  only organization the simulator ever touches. It shows a **DEMO** badge; production
+  organizations never do.
+- **Enter Demo Workspace** signs in as a shared demo user whose only membership is the demo
+  organization (ADMIN there; team and organization management disabled). No customer account is created.
+- **Reset Demo Workspace** (Settings → Demo mode, confirmation required) restores the seeded
+  state. With `DEMO_AUTO_REFRESH=daily` the demo is regenerated on the first entry of a new day.
+- Production data is never reset implicitly.
+
+## Event engine and audit logs
+
+Major mutations write a domain event (outbox) and an audit entry in the same transaction.
+Details: **[docs/events-and-audit.md](docs/events-and-audit.md)**.
+
+## Testing
+
+```bash
+npm test
+```
+
+The suite recreates `cornerops_test` from migrations, seeds the Demo Workspace plus a second
+tenant, and covers tenant isolation, location access, role restrictions, order lifecycle
+persistence (including a connection-pool "restart"), idempotency, inventory movements,
+event/audit atomicity and immutability, demo isolation/reset, team rules, permissions and
+configuration guards. Current result: **43 tests passing**.
+
+## What remains simulated
+
+- **All six channel integrations** (mock adapters, no partner APIs, no credentials).
+  Live integrations need official partner access; see [docs/integrations/credentials.md](docs/integrations/credentials.md).
+- Marketplace **menu publishing** and **availability pushes**.
+- **Demo traffic** and channel incidents (demo organization only).
+- **AI Operations** uses a deterministic analyst (no LLM). Its data comes from the persisted operations layer.
+- **Profitability** is an estimate from configurable commercial terms, not live platform fees.
+
+## Known limitations
+
+- Hosted Supabase (Auth, pooler behaviour, RLS on hosted roles) is **not verified**.
+- Invitation **emails are not sent**; invitations are claimed when the invitee signs in with the same confirmed email.
+- The event outbox has **no consumer** yet.
+- `daily_metrics` is not maintained; analytics query orders directly (fine at current scale).
+- Analytics/overview recompute from order rows on every poll; caching will be needed at higher volume.
+- Mock channel write-backs run inside the request transaction; live adapters should dispatch from the outbox.
+
+## License and ownership
+
+Copyright © CornerTech AI. All rights reserved. This repository is private; no license is
+granted to use, copy or distribute it.

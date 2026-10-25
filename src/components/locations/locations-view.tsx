@@ -10,6 +10,7 @@ import { ErrorState, PageSkeleton } from "@/components/shared/states";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { useLocations } from "@/hooks/queries";
 import { useLocationScope } from "@/hooks/use-location-scope";
+import { useSession } from "@/hooks/use-session";
 import { CHANNEL_THEME } from "@/lib/channel-theme";
 import { formatAED, formatMinutes, formatPercent } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ const STATUS = {
 export function LocationsView() {
   const { data, isLoading, error, refetch } = useLocations();
   const { scope, setScope } = useLocationScope();
+  const session = useSession();
 
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (isLoading || !data) return <PageSkeleton />;
@@ -31,7 +33,7 @@ export function LocationsView() {
     <div className="space-y-4">
       <PageHeader
         title="Locations"
-        description="Casa Norte Mexican Kitchen · 3 branches. Pick a branch to scope the whole workspace, or stay on All locations."
+        description={`${session.organization.name} · ${data.length} location${data.length === 1 ? "" : "s"} you can access. Pick one to scope the workspace, or stay on All locations.`}
         actions={
           scope !== "all" ? (
             <Button size="sm" variant="outline" className="bg-card" onClick={() => setScope("all")}>

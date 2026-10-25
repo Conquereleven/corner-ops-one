@@ -1,19 +1,20 @@
 import { orderFiltersSchema } from "@/domain/orders/types";
-import { handle, searchParams } from "@/server/http";
-import { resolveScope } from "@/server/services/context";
 import { listOrders } from "@/server/services/orders";
-import { getRuntime } from "@/server/store/runtime";
+import { withAppContext } from "@/server/context/request";
+import { handle, searchParams } from "@/server/http";
+
+const loc = (req: Request) => searchParams(req).get("location");
 
 export const GET = handle(async (req: Request) => {
-  const params = searchParams(req);
+  const p = searchParams(req);
   const filters = orderFiltersSchema.parse({
-    location: params.get("filterLocation") ?? undefined,
-    channel: params.get("channel") ?? undefined,
-    status: params.get("status") ?? undefined,
-    range: params.get("range") ?? undefined,
-    delayed: params.get("delayed") === "1" ? true : undefined,
-    q: params.get("q") ?? undefined,
-    limit: params.get("limit") ?? undefined,
+    location: p.get("filterLocation") ?? undefined,
+    channel: p.get("channel") ?? undefined,
+    status: p.get("status") ?? undefined,
+    range: p.get("range") ?? undefined,
+    delayed: p.get("delayed") === "1" ? true : undefined,
+    q: p.get("q") ?? undefined,
+    limit: p.get("limit") ?? undefined,
   });
-  return listOrders(resolveScope(getRuntime(), params.get("location")), filters);
+  return withAppContext({ location: loc(req), strictLocation: true, permission: "orders.view" }, (ctx) => listOrders(ctx, filters));
 });

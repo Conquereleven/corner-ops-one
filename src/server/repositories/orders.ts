@@ -31,6 +31,19 @@ const ITEMS_JSON = `coalesce((select json_agg(json_build_object(
   'quantity', i.quantity, 'unitPrice', i.unit_price, 'modifiers', i.modifiers, 'notes', i.notes, 'total', i.total
 ) order by i.id) from public.order_items i where i.order_id = o.id), '[]'::json)`;
 
+function parseModifiers(v: unknown): UnifiedOrderItem["modifiers"] {
+  if (Array.isArray(v)) return v as UnifiedOrderItem["modifiers"];
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export function mapOrder(r: Record<string, unknown>): UnifiedOrder {
   const items = (r.items as Record<string, unknown>[] | undefined) ?? [];
   return {
@@ -55,7 +68,7 @@ export function mapOrder(r: Record<string, unknown>): UnifiedOrder {
         name: str(i.name),
         quantity: num(i.quantity),
         unitPrice: num(i.unitPrice),
-        modifiers: (i.modifiers as UnifiedOrderItem["modifiers"]) ?? [],
+        modifiers: parseModifiers(i.modifiers),
         notes: optStr(i.notes),
         total: num(i.total),
       }),
@@ -126,7 +139,8 @@ export function orderRow(o: UnifiedOrder) {
   });
 }
 
-export function orderItemRows(o: UnifiedOrder) {
+/** `json` wraps jsonb values for the driver (postgres.js would otherwise send arrays as SQL arrays). */
+export function orderItemRows(o: UnifiedOrder, json: (v: unknown) => unknown) {
   return o.items.map((i) =>
     nullify({
       id: i.id,
@@ -138,7 +152,7 @@ export function orderItemRows(o: UnifiedOrder) {
       name: i.name,
       quantity: i.quantity,
       unit_price: i.unitPrice,
-      modifiers: JSON.stringify(i.modifiers),
+      modifiers: json(i.modifiers),
       notes: i.notes,
       total: i.total,
       created_at: o.createdAt,
@@ -203,7 +217,7 @@ export function createOrderRepository(db: Db, organizationId: string): OrderRepo
         rows.forEach((r) => inserted.add(String(r.id)));
       }
       const created = orders.filter((o) => inserted.has(o.id));
-      const items = created.flatMap(orderItemRows);
+      const items = created.flatMap((o) => orderItemRows(o, (v) => db.json(v as never)));
       for (const batch of chunk(items, 1000)) await db`insert into public.order_items ${db(batch)}`;
       return created;
     },

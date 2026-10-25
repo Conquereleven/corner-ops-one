@@ -80,7 +80,7 @@ export function MenuView() {
                 >
                   {m.issues ? `${m.issues} issue${m.issues > 1 ? "s" : ""}` : m.pending ? `${m.pending} syncing` : "All synced"}
                 </button>
-                {m.issues ? (
+                {m.issues && data.canManage ? (
                   <Button size="xs" variant="outline" className="bg-card" disabled={sync.isPending} onClick={() => sync.mutate({ channel: m.channel })}>
                     <UploadCloud /> Publish
                   </Button>
@@ -167,6 +167,7 @@ export function MenuView() {
                     <div className="flex items-center gap-2">
                       <Switch
                         size="sm"
+                        disabled={!data.canManage}
                         checked={i.isAvailable}
                         onCheckedChange={(v) => update.mutate({ id: i.id, patch: { isAvailable: v } })}
                         aria-label={`${i.name} available`}
@@ -213,14 +214,14 @@ export function MenuView() {
       <Sheet open={!!open} onOpenChange={(o) => !o && setOpenId(null)}>
         <SheetContent side="right" className="w-full gap-0 overflow-y-auto p-5 sm:max-w-xl data-[side=right]:sm:max-w-xl">
           <SheetTitle className="sr-only">Menu item</SheetTitle>
-          {open ? <MenuItemDetail key={open.id} item={open} categoryName={catName(open.categoryId)} /> : null}
+          {open ? <MenuItemDetail key={open.id} canManage={data.canManage} item={open} categoryName={catName(open.categoryId)} /> : null}
         </SheetContent>
       </Sheet>
     </div>
   );
 }
 
-function MenuItemDetail({ item, categoryName }: { item: MenuItemView; categoryName: string }) {
+function MenuItemDetail({ item, categoryName, canManage }: { item: MenuItemView; categoryName: string; canManage: boolean }) {
   const update = useMenuUpdate();
   const sync = useMenuSync();
   const locationName = useLocationName();
@@ -265,12 +266,12 @@ function MenuItemDetail({ item, categoryName }: { item: MenuItemView; categoryNa
         </div>
         <div className="col-span-full flex items-center justify-between border-t pt-3">
           <label className="flex items-center gap-2 text-sm">
-            <Switch checked={item.isAvailable} onCheckedChange={(v) => update.mutate({ id: item.id, patch: { isAvailable: v } })} />
+            <Switch disabled={!canManage} checked={item.isAvailable} onCheckedChange={(v) => update.mutate({ id: item.id, patch: { isAvailable: v } })} />
             Available on all channels
           </label>
           <Button
             size="sm"
-            disabled={!dirty || !valid || update.isPending}
+            disabled={!canManage || !dirty || !valid || update.isPending}
             onClick={() => update.mutate({ id: item.id, patch: { price: Number(price), prepTimeMinutes: Number(prep) } })}
           >
             Save changes
@@ -296,7 +297,7 @@ function MenuItemDetail({ item, categoryName }: { item: MenuItemView; categoryNa
                 </div>
               </div>
               <MappingStatusLabel status={m.status} />
-              {m.status !== "synced" && m.status !== "pending" ? (
+              {canManage && m.status !== "synced" && m.status !== "pending" ? (
                 <Button size="xs" variant="outline" disabled={sync.isPending} onClick={() => sync.mutate({ channel: m.channel, menuItemId: item.id })}>
                   <RefreshCw /> {m.status === "missing" ? "Publish" : "Sync"}
                 </Button>

@@ -1,9 +1,10 @@
-import { handle, parseBody, searchParams } from "@/server/http";
 import { askCornerOps, askSchema } from "@/server/services/ai";
-import { resolveScope } from "@/server/services/context";
-import { getRuntime } from "@/server/store/runtime";
+import { withAppContext } from "@/server/context/request";
+import { handle, parseBody, searchParams } from "@/server/http";
+
+const loc = (req: Request) => searchParams(req).get("location");
 
 export const POST = handle(async (req: Request) => {
   const { question } = await parseBody(req, askSchema);
-  return askCornerOps(resolveScope(getRuntime(), searchParams(req).get("location")), question);
+  return withAppContext({ location: loc(req), strictLocation: true }, (c) => askCornerOps(c, question));
 });

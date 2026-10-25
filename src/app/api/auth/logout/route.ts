@@ -1,7 +1,10 @@
 import { cookies } from "next/headers";
-import { SESSION_COOKIE } from "@/server/auth/session";
+import { getAuthProvider } from "@/server/auth";
+import { ORG_COOKIE } from "@/server/context/request";
+import { handle } from "@/server/http";
 
-export async function POST() {
-  (await cookies()).delete(SESSION_COOKIE);
-  return Response.json({ ok: true });
-}
+export const POST = handle(async () => {
+  await getAuthProvider().signOut();
+  (await cookies()).delete(ORG_COOKIE);
+  return { ok: true };
+});

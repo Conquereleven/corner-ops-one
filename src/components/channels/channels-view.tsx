@@ -110,7 +110,7 @@ function ChannelCard({ channel: c, focused, onLogs }: { channel: ChannelCardData
               <span className="w-28 truncate font-medium">{locationName(conn.locationId)}</span>
               <span className="flex-1 truncate font-mono text-[11px] text-muted-foreground">{conn.externalStoreId}</span>
               <span className="text-[11px] tabular text-muted-foreground">{conn.status === "disconnected" ? "offline" : `${conn.latencyMs}ms`}</span>
-              {conn.status === "disconnected" ? (
+              {!c.canManage ? null : conn.status === "disconnected" ? (
                 <Button size="xs" variant="ghost" onClick={() => action.mutate({ channel: c.channel, action: "connect", locationId: conn.locationId })}>
                   Connect
                 </Button>
@@ -133,7 +133,7 @@ function ChannelCard({ channel: c, focused, onLogs }: { channel: ChannelCardData
       </div>
 
       <footer className="flex flex-wrap items-center gap-2 border-t px-4 py-2.5">
-        {allDisconnected ? (
+        {!c.canManage ? null : allDisconnected ? (
           <Button size="sm" onClick={() => action.mutate({ channel: c.channel, action: "connect" })} disabled={action.isPending}>
             <Plug /> Connect
           </Button>

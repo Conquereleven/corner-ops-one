@@ -11,6 +11,7 @@ import { PageHeader, Panel } from "@/components/shared/page-header";
 import { ErrorState, PageSkeleton } from "@/components/shared/states";
 import type { AnalyticsRange } from "@/domain/analytics/range";
 import { useAnalytics } from "@/hooks/queries";
+import { useSession } from "@/hooks/use-session";
 import { CHANNEL_THEME } from "@/lib/channel-theme";
 import { formatAED, formatDay, formatMinutes, formatNumber, formatPercent, formatWeekday } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -44,6 +45,8 @@ export function RangePicker({ value, onChange }: { value: AnalyticsRange; onChan
 export function AnalyticsView({ initialRange }: { initialRange: AnalyticsRange }) {
   const [range, setRange] = useState<AnalyticsRange>(initialRange);
   const { data, isLoading, error, refetch } = useAnalytics(range);
+  const session = useSession();
+  const canProfit = session.permissions.includes("profitability.view");
 
   const header = (
     <PageHeader
@@ -135,7 +138,7 @@ export function AnalyticsView({ initialRange }: { initialRange: AnalyticsRange }
 
         <Panel className="xl:col-span-2" title="Marketplace concentration" description="How dependent the business is on each platform">
           <div className="mb-4 rounded-lg bg-muted/60 px-3 py-2.5 text-sm">
-            <span className="font-semibold">{Math.round(conc.topMarketplaceShareOfDeliveryPct)}%</span> of Casa Norte&apos;s delivery-platform revenue currently depends on{" "}
+            <span className="font-semibold">{Math.round(conc.topMarketplaceShareOfDeliveryPct)}%</span> of {session.organization.name}&apos;s delivery-platform revenue currently depends on{" "}
             <span className="font-semibold">{topName}</span>. Marketplaces carry {formatPercent(conc.marketplaceSharePct, 0)} of all revenue; owned channels{" "}
             {formatPercent(conc.ownedSharePct, 0)}.
           </div>
@@ -194,6 +197,7 @@ export function AnalyticsView({ initialRange }: { initialRange: AnalyticsRange }
         <Panel className="xl:col-span-2" title="Revenue by channel" description={data.label}>
           <ChannelBarList rows={[...data.byChannel].sort((a, b) => b.revenue - a.revenue).map((c) => ({ channel: c.channel, value: c.revenue }))} secondary={(r) => `${formatNumber(data.byChannel.find((c) => c.channel === r.channel)?.orders ?? 0)} orders`} />
         </Panel>
+        {canProfit ? (
         <Link
           href="/profitability"
           className="group flex flex-col justify-between rounded-xl bg-[#141417] p-5 text-white ring-1 ring-black/10 transition-transform hover:-translate-y-0.5"
@@ -206,6 +210,7 @@ export function AnalyticsView({ initialRange }: { initialRange: AnalyticsRange }
             Estimated contribution margin by channel <ArrowRight className="size-4" />
           </div>
         </Link>
+        ) : null}
       </div>
       {data.firstOrderAt ? (
         <p className="text-[11px] text-muted-foreground">

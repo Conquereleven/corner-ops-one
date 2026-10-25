@@ -5,24 +5,25 @@ import { OrdersView } from "@/components/orders/orders-view";
 import { PageSkeleton } from "@/components/shared/states";
 import { orderFiltersSchema } from "@/domain/orders/types";
 import { parseOrderFilters, queryKeys } from "@/lib/query-keys";
-import { getServerScope, prefetch } from "@/server/prefetch";
+import { Forbidden } from "@/components/shared/forbidden";
+import { loadPage } from "@/server/page";
 import { listOrders } from "@/server/services/orders";
 
 export const metadata: Metadata = { title: "Live Orders" };
 
 export default async function OrdersPage({ searchParams }: PageProps<"/orders">) {
   const sp = await searchParams;
-  const scope = await getServerScope();
   const get = (k: string) => (typeof sp[k] === "string" ? (sp[k] as string) : undefined);
   const filters = parseOrderFilters(get);
-  const state = await prefetch([
+  const page = await loadPage({ permission: "orders.view" }, (ctx) => [
     {
-      queryKey: queryKeys.orders(scope, filters),
-      queryFn: () => listOrders(scope, orderFiltersSchema.parse({ ...filters, location: filters.filterLocation, delayed: filters.delayed || undefined })),
+      queryKey: queryKeys.orders(ctx.scope.key, filters),
+      queryFn: () => listOrders(ctx, orderFiltersSchema.parse({ ...filters, location: filters.filterLocation, delayed: filters.delayed || undefined })),
     },
   ]);
+  if ("forbidden" in page) return <Forbidden message={page.forbidden} />;
   return (
-    <HydrationBoundary state={state}>
+    <HydrationBoundary state={page.state}>
       <Suspense fallback={<PageSkeleton />}>
         <OrdersView />
       </Suspense>

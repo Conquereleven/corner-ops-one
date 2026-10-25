@@ -1,6 +1,7 @@
-import { handle, searchParams } from "@/server/http";
-import { resolveScope } from "@/server/services/context";
 import { getMenu } from "@/server/services/menu";
-import { getRuntime } from "@/server/store/runtime";
+import { withAppContext } from "@/server/context/request";
+import { handle, searchParams } from "@/server/http";
 
-export const GET = handle(async (req: Request) => getMenu(resolveScope(getRuntime(), searchParams(req).get("location"))));
+const loc = (req: Request) => searchParams(req).get("location");
+
+export const GET = handle(async (req: Request) => withAppContext({ location: loc(req), strictLocation: true, permission: "menu.view" }, getMenu));

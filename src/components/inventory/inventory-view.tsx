@@ -63,9 +63,11 @@ export function InventoryView() {
         title="Inventory"
         description="Operational stock by location. Ingredient levels drive menu availability; usage is deducted automatically from accepted orders."
         actions={
-          <Button size="sm" variant="outline" className="bg-card" onClick={() => setMovementFor(data.items[0])}>
-            <PackagePlus /> Record movement
-          </Button>
+          data.canManage && data.items.length ? (
+            <Button size="sm" variant="outline" className="bg-card" onClick={() => setMovementFor(data.items[0])}>
+              <PackagePlus /> Record movement
+            </Button>
+          ) : null
         }
       />
 
@@ -171,9 +173,11 @@ export function InventoryView() {
                       )}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <Button size="xs" variant="outline" onClick={() => setMovementFor(i)}>
-                        Adjust
-                      </Button>
+                      {data.canManage ? (
+                        <Button size="xs" variant="outline" onClick={() => setMovementFor(i)}>
+                          Adjust
+                        </Button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
