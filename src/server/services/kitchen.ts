@@ -1,33 +1,28 @@
 import "server-only";
 import { prepMinutes } from "@/domain/analytics/metrics";
-import type { LocationScope } from "@/domain/locations/types";
 import { computeSla } from "@/domain/orders/sla";
 import { HOUR, MINUTE, toMs } from "@/lib/time";
-import { inScope, live } from "./context";
+import type { AppContext } from "../context/app-context";
 
-export async function getKitchenBoard(scope: LocationScope) {
-  const rt = await live();
-  const now = Date.now();
-  const { db } = rt;
-  const tickets = db.orders
-    .filter((o) => inScope(scope, o.locationId) && ["new", "accepted", "preparing", "ready"].includes(o.status))
-    .sort((a, b) => a.placedAt.localeCompare(b.placedAt));
-  const recentlyBumped = db.orders
-    .filter(
-      (o) =>
-        inScope(scope, o.locationId) &&
-        (o.status === "picked_up" || o.status === "completed") &&
-        (toMs(o.pickedUpAt) ?? 0) > now - 10 * MINUTE,
-    )
+export async function getKitchenBoard(ctx: AppContext) {
+  const now = ctx.now;
+  const [active, recent, settings] = await Promise.all([
+    ctx.data.activeOrders(),
+    ctx.repos.orders.list({ locationIds: ctx.scope.locationIds, placedFrom: now - 6 * HOUR, placedTo: now + 1, withItems: false }),
+    ctx.data.settings(),
+  ]);
+  const tickets = [...active].sort((a, b) => a.placedAt.localeCompare(b.placedAt));
+  const recentlyBumped = recent
+    .filter((o) => (o.status === "picked_up" || o.status === "completed") && (toMs(o.pickedUpAt) ?? 0) > now - 10 * MINUTE)
     .sort((a, b) => (b.pickedUpAt ?? "").localeCompare(a.pickedUpAt ?? ""))
     .slice(0, 8);
-  const readyLastHour = db.orders.filter((o) => inScope(scope, o.locationId) && (toMs(o.readyAt) ?? 0) > now - HOUR);
+  const readyLastHour = recent.filter((o) => (toMs(o.readyAt) ?? 0) > now - HOUR);
   const preps = readyLastHour.map(prepMinutes).filter((v): v is number => v !== undefined);
-  const levels = tickets.map((t) => computeSla(t, now, db.settings.sla).level);
+  const levels = tickets.map((t) => computeSla(t, now, settings.sla).level);
   return {
     tickets,
     recentlyBumped,
-    sla: db.settings.sla,
+    sla: settings.sla,
     stats: {
       inQueue: tickets.length,
       warning: levels.filter((l) => l === "warning").length,

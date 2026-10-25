@@ -69,6 +69,7 @@ export function generateDemoDatabase(now: number = Date.now()): Database {
       slug: "cornerops-demo",
       currency: "AED",
       timezone: "Asia/Dubai",
+      isDemo: true,
       createdAt,
       updatedAt: createdAt,
     },
@@ -520,7 +521,7 @@ function seedMovements(db: Database, rng: Rng, now: number) {
         type: "usage",
         quantity: -round2(qty),
         note: d === 0 ? "Usage so far today (order stream)" : "Daily usage (order stream)",
-        createdBy: "system",
+        actorLabel: "system",
         createdAt: iso(Math.min(dayEnd - 1, dayStart + 23.9 * HOUR)),
       });
     }
@@ -533,7 +534,7 @@ function seedMovements(db: Database, rng: Rng, now: number) {
           type: "purchase",
           quantity: round2(item.parLevel * rng.float(0.35, 0.6)),
           note: `Delivery · ${item.supplier}`,
-          createdBy: "usr_gm",
+          actorLabel: "usr_gm",
           createdAt: iso(dayStart + 8 * HOUR + rng.int(0, 90) * MINUTE),
         });
       }
@@ -544,7 +545,7 @@ function seedMovements(db: Database, rng: Rng, now: number) {
           type: "waste",
           quantity: -round2(item.parLevel * rng.float(0.01, 0.04)),
           note: rng.pick(["Spoilage at close", "Quality check — discarded", "Dropped during prep"]),
-          createdBy: "usr_kitchen",
+          actorLabel: "usr_kitchen",
           createdAt: iso(dayStart + 23 * HOUR),
         });
       }
@@ -553,11 +554,11 @@ function seedMovements(db: Database, rng: Rng, now: number) {
   // Stock counts and inter-branch transfers.
   const find = (loc: string, key: string) => byLocKey.get(`${loc}:${key}`)!;
   const t = (h: number) => iso(now - h * HOUR);
-  push({ locationId: "loc_marina", inventoryItemId: find("loc_marina", "avocados").id, type: "adjustment", quantity: -12, note: "Stock count variance", createdBy: "usr_marina", createdAt: t(26) });
-  push({ locationId: "loc_bbay", inventoryItemId: find("loc_bbay", "consome").id, type: "transfer", quantity: -6, note: "Transfer to Dubai Marina", createdBy: "usr_gm", createdAt: t(20) });
-  push({ locationId: "loc_marina", inventoryItemId: find("loc_marina", "consome").id, type: "transfer", quantity: 6, note: "Transfer from Business Bay", createdBy: "usr_gm", createdAt: t(20) });
-  push({ locationId: "loc_jvc", inventoryItemId: find("loc_jvc", "hibiscus").id, type: "waste", quantity: -3.2, note: "Batch failed quality check", createdBy: "usr_jvc", createdAt: t(5) });
-  push({ locationId: "loc_jvc", inventoryItemId: find("loc_jvc", "hibiscus").id, type: "adjustment", quantity: -1.1, note: "Stock count — container empty", createdBy: "usr_jvc", createdAt: t(2) });
+  push({ locationId: "loc_marina", inventoryItemId: find("loc_marina", "avocados").id, type: "adjustment", quantity: -12, note: "Stock count variance", actorLabel: "usr_marina", createdAt: t(26) });
+  push({ locationId: "loc_bbay", inventoryItemId: find("loc_bbay", "consome").id, type: "transfer", quantity: -6, note: "Transfer to Dubai Marina", actorLabel: "usr_gm", createdAt: t(20) });
+  push({ locationId: "loc_marina", inventoryItemId: find("loc_marina", "consome").id, type: "transfer", quantity: 6, note: "Transfer from Business Bay", actorLabel: "usr_gm", createdAt: t(20) });
+  push({ locationId: "loc_jvc", inventoryItemId: find("loc_jvc", "hibiscus").id, type: "waste", quantity: -3.2, note: "Batch failed quality check", actorLabel: "usr_jvc", createdAt: t(5) });
+  push({ locationId: "loc_jvc", inventoryItemId: find("loc_jvc", "hibiscus").id, type: "adjustment", quantity: -1.1, note: "Stock count — container empty", actorLabel: "usr_jvc", createdAt: t(2) });
 
   movements.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   db.inventoryMovements = movements;

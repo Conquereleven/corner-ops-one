@@ -8,8 +8,14 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
-    "db:seed:export": "tsx --tsconfig tsconfig.json scripts/export-seed-sql.ts",
-    "db:verify": "bash scripts/verify-db.sh"
+    "db:verify": "npm run test -- tests/integration",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:local:start": "scripts/db/local.sh start",
+    "db:local:stop": "scripts/db/local.sh stop",
+    "db:local:reset": "scripts/db/reset-local.sh cornerops",
+    "db:migrate": "tsx scripts/db/migrate.ts",
+    "db:seed:demo": "tsx --tsconfig tsconfig.json scripts/db/seed-demo.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

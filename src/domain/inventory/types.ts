@@ -33,7 +33,11 @@ export interface InventoryMovement {
   quantity: number;
   note?: string;
   orderId?: string;
-  createdBy: string;
+  /** Auth user who made the change (null for system/simulator activity). */
+  actorUserId?: string | null;
+  /** 'user', 'system', 'simulator' or a seed label. */
+  actorLabel: string;
+  reason?: string;
   createdAt: string;
   updatedAt: string;
 }

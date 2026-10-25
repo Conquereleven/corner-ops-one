@@ -2,37 +2,49 @@ import "server-only";
 import { computeAlerts } from "@/domain/alerts/engine";
 import type { OperationalAlert } from "@/domain/alerts/types";
 import { usageRates } from "@/domain/inventory/forecast";
-import type { LocationScope } from "@/domain/locations/types";
-import { DAY, iso } from "@/lib/time";
-import type { Runtime } from "../store/runtime";
-import { inScope, ordersBetween, todayWindow } from "./context";
+import { DAY, HOUR, iso } from "@/lib/time";
+import type { AppContext } from "../context/app-context";
+import { todayWindow } from "./windows";
 
-export function listAlerts(rt: Runtime, scope: LocationScope, now = Date.now()): OperationalAlert[] {
-  const { db } = rt;
+/** Operational alerts derived from live state, with persisted first-seen and acknowledgement. */
+export async function listAlerts(ctx: AppContext): Promise<OperationalAlert[]> {
+  const now = ctx.now;
   const { start } = todayWindow(now);
-  const ordersToday = ordersBetween(rt, "all", start, now + 1);
+  const [today, baseline, recent, inventory, menu, connections, settings, states] = await Promise.all([
+    ctx.data.orders({ from: start, to: now + 1 }),
+    ctx.data.orders({ from: start - 7 * DAY, to: start }),
+    ctx.data.orders({ from: now - 4 * HOUR, to: now + 1, withItems: true }),
+    ctx.data.inventory(),
+    ctx.data.menu(),
+    ctx.data.connections(),
+    ctx.data.settings(),
+    ctx.repos.alerts.states(),
+  ]);
   const drafts = computeAlerts({
-    organizationId: db.organization.id,
+    organizationId: ctx.organization.id,
     now,
-    locations: db.locations,
-    ordersToday,
-    ordersBaseline: ordersBetween(rt, "all", start - 7 * DAY, start),
-    inventory: db.inventoryItems,
-    usageRates: usageRates(ordersBetween(rt, "all", now - 4 * 3600_000, now + 1), db.menuItems, now),
-    menuItems: db.menuItems,
-    connections: db.channelConnections,
-    mappings: db.menuMappings,
-    sla: db.settings.sla,
+    locations: ctx.allowedLocations.filter((l) => ctx.scope.locationIds.includes(l.id)),
+    ordersToday: today,
+    ordersBaseline: baseline,
+    inventory,
+    usageRates: usageRates(recent, menu.items, now),
+    menuItems: menu.items,
+    connections,
+    mappings: menu.mappings,
+    sla: settings.sla,
   });
+  const unseen = drafts.filter((d) => !states.has(d.id));
+  if (unseen.length) {
+    await ctx.repos.alerts.recordSeen(
+      unseen.map((d) => ({ key: d.id, locationId: d.locationId, channel: d.channel, severity: d.severity, category: d.category, title: d.title, detail: d.detail, href: d.href })),
+    );
+  }
   return drafts
-    .filter((a) => !a.locationId || inScope(scope, a.locationId))
-    .filter((a) => !db.acknowledgedAlerts.has(a.id))
-    .map((a) => {
-      if (!db.alertFirstSeen.has(a.id)) db.alertFirstSeen.set(a.id, iso(now));
-      return { ...a, createdAt: db.alertFirstSeen.get(a.id)! };
-    });
+    .filter((d) => !states.get(d.id)?.acknowledgedAt)
+    .map((d) => ({ ...d, createdAt: states.get(d.id)?.createdAt ?? iso(now) }));
 }
 
-export function acknowledgeAlert(rt: Runtime, id: string) {
-  rt.db.acknowledgedAlerts.add(id);
+export async function acknowledgeAlert(ctx: AppContext, key: string) {
+  const ok = await ctx.repos.alerts.acknowledge(key, ctx.user.id);
+  return { ok };
 }

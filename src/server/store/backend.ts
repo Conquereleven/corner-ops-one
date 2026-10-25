@@ -3,9 +3,9 @@ import type { ChannelLogEntry, OrderChannel } from "@/domain/channels/types";
 import { iso } from "@/lib/time";
 import type { Database } from "./types";
 
-export function newId(db: Database, prefix: string): string {
-  db.counters.id += 1;
-  return `${prefix}_${db.counters.id.toString(36)}`;
+/** Globally unique, opaque ids (unique across restarts and organizations). */
+export function newId(_db: Database | null, prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
 }
 
 const MAX_LOGS = 600;

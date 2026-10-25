@@ -1,32 +1,35 @@
 import "server-only";
 import { z } from "zod";
 import { CHANNEL_CATALOG, ORDER_CHANNELS, orderChannelSchema } from "@/domain/channels/types";
-import { resetRuntime } from "../store/runtime";
-import { live } from "./context";
-import { injectDemoOrder } from "./orders";
+import { appMode } from "../config";
+import { requirePermission, type AppContext } from "../context/app-context";
+import { getDemoFeed } from "../demo/simulation";
+import { resetDemoWorkspace } from "../demo/workspace";
+import { ForbiddenError } from "../errors";
+import { injectOrder } from "./orders";
 
-export async function getSettings() {
-  const rt = await live();
-  const { db } = rt;
+export async function getSettings(ctx: AppContext) {
+  requirePermission(ctx, "settings.view");
+  const [settings, restaurant, connections, events] = await Promise.all([
+    ctx.data.settings(),
+    ctx.repos.organization.restaurant(),
+    ctx.data.connections(),
+    ctx.organization.isDemo && appMode() === "demo" ? getDemoFeed(ctx.organization.id) : Promise.resolve([]),
+  ]);
   return {
-    organization: db.organization,
-    restaurant: db.restaurant,
-    users: db.users,
-    settings: db.settings,
+    organization: ctx.organization,
+    restaurant,
+    settings,
+    canManage: ctx.permissions.has("settings.manage"),
     integrations: ORDER_CHANNELS.map((c) => ({
       channel: c,
       name: CHANNEL_CATALOG[c].name,
       kind: CHANNEL_CATALOG[c].kind,
       mode: "mock" as const,
       liveAvailable: false,
-      locations: db.channelConnections.filter((x) => x.channel === c).length,
+      locations: connections.filter((x) => x.channel === c).length,
     })),
-    simulation: {
-      lastTickAt: new Date(db.simulation.lastTickAt).toISOString(),
-      events: db.simulation.events.slice(-25).reverse(),
-      seededAt: new Date(db.seededAt).toISOString(),
-      orderCount: db.orders.length,
-    },
+    simulation: ctx.organization.isDemo ? { events } : null,
   };
 }
 export type SettingsData = Awaited<ReturnType<typeof getSettings>>;
@@ -60,31 +63,50 @@ export const settingsPatchSchema = z.object({
   economics: z.record(orderChannelSchema, economicsSchema.partial()).optional(),
 });
 
-export async function updateSettings(patch: z.infer<typeof settingsPatchSchema>) {
-  const rt = await live();
-  const s = rt.db.settings;
-  if (patch.sla) Object.assign(s.sla, patch.sla);
-  if (patch.demo) {
-    const wasEnabled = s.demo.enabled;
-    Object.assign(s.demo, patch.demo);
-    if (!wasEnabled && s.demo.enabled) rt.db.simulation.nextOrderAt = Date.now() + 8000;
+export async function updateSettings(ctx: AppContext, patch: z.infer<typeof settingsPatchSchema>) {
+  const onlyDemo = !patch.sla && !patch.economics && !!patch.demo;
+  // Demo simulation toggles are a presenter control; everything else is organization configuration.
+  if (onlyDemo) {
+    requirePermission(ctx, "demo.manage");
+    if (!ctx.organization.isDemo) throw new ForbiddenError("Simulation settings only apply to the Demo Workspace.");
+  } else {
+    requirePermission(ctx, "settings.manage");
   }
+  const before = await ctx.repos.organization.settings();
+  const next = structuredClone(before);
+  if (patch.sla) Object.assign(next.sla, patch.sla);
+  if (patch.demo) Object.assign(next.demo, patch.demo);
   if (patch.economics) {
-    for (const [ch, e] of Object.entries(patch.economics)) Object.assign(s.economics[ch as keyof typeof s.economics], e);
+    for (const [ch, e] of Object.entries(patch.economics)) Object.assign(next.economics[ch as keyof typeof next.economics], e);
   }
-  return s;
+  await ctx.repos.organization.updateSettings(next);
+  const sections = Object.keys(patch).filter((k) => patch[k as keyof typeof patch]);
+  await ctx.repos.events.append({ type: "settings.updated", aggregateType: "organization", aggregateId: ctx.organization.id, payload: { sections } }, ctx.actor);
+  await ctx.repos.audit.record(
+    {
+      action: "settings.updated",
+      entityType: "organization_settings",
+      entityId: ctx.organization.id,
+      before: Object.fromEntries(sections.map((s) => [s, before[s as keyof typeof before]])),
+      after: Object.fromEntries(sections.map((s) => [s, next[s as keyof typeof next]])),
+    },
+    ctx.actor,
+  );
+  return next;
 }
 
 export const demoActionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("inject"), channel: orderChannelSchema.optional(), locationId: z.string().optional() }),
-  z.object({ action: z.literal("reset") }),
+  z.object({ action: z.literal("reset"), confirm: z.literal("RESET") }),
 ]);
 
-export async function runDemoAction(input: z.infer<typeof demoActionSchema>) {
+export async function runDemoAction(ctx: AppContext, input: z.infer<typeof demoActionSchema>) {
+  requirePermission(ctx, "demo.manage");
+  if (!ctx.organization.isDemo) throw new ForbiddenError("Only the Demo Workspace can be reset or receive simulated orders.");
   if (input.action === "reset") {
-    resetRuntime();
-    return { ok: true as const, order: null, message: "Demo data regenerated" };
+    await resetDemoWorkspace(ctx.actor);
+    return { ok: true as const, order: null, message: "Demo Workspace restored to its initial state" };
   }
-  const res = await injectDemoOrder(input.channel, input.locationId);
+  const res = await injectOrder(ctx, input);
   return { ok: true as const, order: res.order, message: res.message };
 }

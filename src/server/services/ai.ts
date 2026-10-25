@@ -8,38 +8,62 @@ import { computeChannelProfitability } from "@/domain/analytics/profitability";
 import { CHANNEL_CATALOG, ORDER_CHANNELS } from "@/domain/channels/types";
 import { hoursUntilStockout, usageRates } from "@/domain/inventory/forecast";
 import { stockStatus } from "@/domain/inventory/types";
-import type { LocationScope } from "@/domain/locations/types";
+import type { ChannelConnection } from "@/domain/channels/types";
+import type { InventoryItem } from "@/domain/inventory/types";
+import type { Location } from "@/domain/locations/types";
+import type { MenuChannelMapping, MenuItem } from "@/domain/menu/types";
+import type { UnifiedOrder } from "@/domain/orders/types";
 import { computeSla } from "@/domain/orders/sla";
 import { ACTIVE_STATUSES } from "@/domain/orders/types";
 import { DAY, HOUR, MINUTE, startOfDubaiDay } from "@/lib/time";
-import type { Runtime } from "../store/runtime";
-import { channelHealthSummary } from "./channels";
-import { inScope, live, ordersBetween, todayWindow } from "./context";
+import { requirePermission, type AppContext } from "../context/app-context";
+import type { WorkspaceSettings } from "../store/types";
+import { channelHealthSummary } from "./channel-health";
+import { todayWindow } from "./windows";
 
 /** Provider registry. Add an LLM-backed provider here; keep API keys server-side. */
 const providers: Record<string, OperationsAIProvider> = { deterministic: deterministicProvider };
 
-function provider(rt: Runtime): OperationsAIProvider {
-  return providers[rt.db.settings.aiProvider] ?? deterministicProvider;
+function provider(settings: WorkspaceSettings): OperationsAIProvider {
+  return providers[settings.aiProvider] ?? deterministicProvider;
 }
 
-export function buildSnapshot(rt: Runtime, scope: LocationScope, now: number): OperationsSnapshot {
-  const { db } = rt;
+/** Everything the analyst may look at — loaded from the persistent operations layer. */
+export interface SnapshotInput {
+  scopeLabel: string;
+  /** Orders in scope placed since 7 days before today, with items. */
+  orders: UnifiedOrder[];
+  active: UnifiedOrder[];
+  /** Locations in scope. */
+  locations: Location[];
+  /** All locations the user may access (for transfer suggestions). */
+  allowedLocations: Location[];
+  inventory: InventoryItem[];
+  allowedInventory: InventoryItem[];
+  menuItems: MenuItem[];
+  mappings: MenuChannelMapping[];
+  connections: ChannelConnection[];
+  settings: WorkspaceSettings;
+}
+
+export function buildSnapshot(input: SnapshotInput, now: number): OperationsSnapshot {
+  const db = { settings: input.settings, menuItems: input.menuItems, menuMappings: input.mappings };
+  const ordersBetween = (a: number, b: number) => input.orders.filter((o) => { const t = Date.parse(o.placedAt); return t >= a && t < b; });
   const { start, yStart, yEnd } = todayWindow(now);
-  const today = ordersBetween(rt, scope, start, now + 1);
-  const yesterday = ordersBetween(rt, scope, yStart, yEnd);
-  const week = ordersBetween(rt, scope, start - 7 * DAY, start);
-  const last7 = ordersBetween(rt, scope, start - 6 * DAY, now + 1);
+  const today = ordersBetween(start, now + 1);
+  const yesterday = ordersBetween(yStart, yEnd);
+  const week = ordersBetween(start - 7 * DAY, start);
+  const last7 = ordersBetween(start - 6 * DAY, now + 1);
   const t = summarize(today);
   const y = summarize(yesterday);
-  const locs = db.locations.filter((l) => inScope(scope, l.id));
-  const locName = (id: string) => db.locations.find((l) => l.id === id)?.name ?? id;
+  const locs = input.locations;
+  const locName = (id: string) => input.allowedLocations.find((l) => l.id === id)?.name ?? id;
 
-  const rates = usageRates(ordersBetween(rt, "all", now - 4 * HOUR, now + 1), db.menuItems, now);
-  const stockRisks: StockRisk[] = db.inventoryItems
-    .filter((i) => inScope(scope, i.locationId) && stockStatus(i) !== "healthy")
+  const rates = usageRates(ordersBetween(now - 4 * HOUR, now + 1), input.menuItems, now);
+  const stockRisks: StockRisk[] = input.inventory
+    .filter((i) => stockStatus(i) !== "healthy")
     .map((i) => {
-      const donor = db.inventoryItems
+      const donor = input.allowedInventory
         .filter((x) => x.key === i.key && x.locationId !== i.locationId && x.quantity > x.parLevel * 0.6)
         .sort((a, b) => b.quantity - a.quantity)[0];
       return {
@@ -51,14 +75,14 @@ export function buildSnapshot(rt: Runtime, scope: LocationScope, now: number): O
         quantity: i.quantity,
         unit: i.unit,
         hoursLeft: hoursUntilStockout(i, rates.get(`${i.locationId}:${i.key}`)),
-        hoursToClose: hoursUntilClose(db.locations.find((l) => l.id === i.locationId)?.operatingHours.close ?? "00:00", now),
+        hoursToClose: hoursUntilClose(input.allowedLocations.find((l) => l.id === i.locationId)?.operatingHours.close ?? "00:00", now),
         affectedItems: db.menuItems.filter((m) => m.recipe.some((r) => r.inventoryItemKey === i.key)).map((m) => m.name),
         transferFrom: donor ? { locationName: locName(donor.locationId), quantity: donor.quantity } : undefined,
       };
     });
 
   const profit = computeChannelProfitability(last7, db.settings.economics, db.menuItems);
-  const health = channelHealthSummary(rt, scope, today);
+  const health = channelHealthSummary(input.connections, today);
   const channels = ORDER_CHANNELS.filter((c) => health.find((h) => h.channel === c)?.covered).map((channel) => {
     const ct = summarize(today.filter((o) => o.channel === channel));
     const cy = summarize(yesterday.filter((o) => o.channel === channel));
@@ -92,7 +116,7 @@ export function buildSnapshot(rt: Runtime, scope: LocationScope, now: number): O
   const topMarket = [...marketplaceRev].sort((a, b) => b.grossSales7d - a.grossSales7d)[0];
   const totalRev7 = channels.reduce((s, c) => s + c.grossSales7d, 0);
 
-  const active = db.orders.filter((o) => inScope(scope, o.locationId) && ACTIVE_STATUSES.includes(o.status));
+  const active = input.active.filter((o) => ACTIVE_STATUSES.includes(o.status));
   const delayedOrders = active
     .map((o) => ({ o, sla: computeSla(o, now, db.settings.sla) }))
     .filter((x) => x.sla.level === "critical")
@@ -106,7 +130,7 @@ export function buildSnapshot(rt: Runtime, scope: LocationScope, now: number): O
 
   return {
     generatedAt: new Date(now).toISOString(),
-    scopeLabel: scope === "all" ? "All locations" : locName(scope),
+    scopeLabel: input.scopeLabel,
     today: { revenue: t.revenue, orders: t.orders, aov: t.aov, avgPrepMinutes: t.avgPrepMinutes, cancellationRate: t.cancellationRate },
     yesterdaySameTime: { revenue: y.revenue, orders: y.orders, aov: y.aov, avgPrepMinutes: y.avgPrepMinutes, cancellationRate: y.cancellationRate },
     locations: locs.map((l) => {
@@ -163,17 +187,67 @@ function hoursUntilClose(close: string, now: number): number {
   return (closeTs - now) / HOUR;
 }
 
-export async function getBriefing(scope: LocationScope) {
-  const rt = await live();
-  const snapshot = buildSnapshot(rt, scope, Date.now());
-  return { ...buildBriefing(snapshot), provider: provider(rt).label, scopeLabel: snapshot.scopeLabel };
+async function loadSnapshot(ctx: AppContext): Promise<{ snapshot: OperationsSnapshot; settings: WorkspaceSettings }> {
+  const now = ctx.now;
+  const { start } = todayWindow(now);
+  const [orders, active, inventory, allowedInventory, menu, connections, settings] = await Promise.all([
+    ctx.data.orders({ from: start - 7 * DAY, to: now + 1, withItems: true }),
+    ctx.data.activeOrders(),
+    ctx.data.inventory(),
+    ctx.repos.inventory.items(ctx.allowedLocations.map((l) => l.id)),
+    ctx.data.menu(),
+    ctx.data.connections(),
+    ctx.data.settings(),
+  ]);
+  const snapshot = buildSnapshot(
+    {
+      scopeLabel: ctx.scope.label,
+      orders,
+      active,
+      locations: ctx.allowedLocations.filter((l) => ctx.scope.locationIds.includes(l.id)),
+      allowedLocations: ctx.allowedLocations,
+      inventory,
+      allowedInventory,
+      menuItems: menu.items,
+      mappings: menu.mappings,
+      connections,
+      settings,
+    },
+    now,
+  );
+  // Financial figures are withheld from roles without profitability access.
+  if (!ctx.permissions.has("profitability.view")) {
+    snapshot.channels = snapshot.channels.map((c) => ({ ...c, marginPct7d: 0, contribution7d: 0, contributionPerOrder7d: 0 }));
+  }
+  return { snapshot, settings };
+}
+
+export async function getBriefing(ctx: AppContext) {
+  requirePermission(ctx, "ai.view");
+  const { snapshot, settings } = await loadSnapshot(ctx);
+  const briefing = buildBriefing(snapshot);
+  if (!ctx.permissions.has("profitability.view")) {
+    briefing.opportunities = briefing.opportunities.filter((o) => o.id !== "direct");
+  }
+  return { ...briefing, provider: provider(settings).label, scopeLabel: snapshot.scopeLabel };
 }
 export type BriefingData = Awaited<ReturnType<typeof getBriefing>>;
 
 export const askSchema = z.object({ question: z.string().trim().min(2).max(500) });
 
-export async function askCornerOps(scope: LocationScope, question: string) {
-  const rt = await live();
-  const snapshot = buildSnapshot(rt, scope, Date.now());
-  return provider(rt).answer(question, snapshot);
+export async function askCornerOps(ctx: AppContext, question: string) {
+  requirePermission(ctx, "ai.view");
+  const { snapshot, settings } = await loadSnapshot(ctx);
+  if (!ctx.permissions.has("profitability.view") && /\b(profit\w*|margins?|contribution|commissions?)\b/i.test(question)) {
+    return {
+      question,
+      answer: "Profitability figures aren't available for your role. Ask an owner or operations manager.",
+      bullets: [],
+      sources: [],
+      followUps: ["Where are our operational bottlenecks?"],
+      provider: provider(settings).label,
+      generatedAt: snapshot.generatedAt,
+    };
+  }
+  return provider(settings).answer(question, snapshot);
 }

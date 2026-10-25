@@ -1,14 +1,15 @@
 /**
- * Minimal signed-cookie session for demo access. Uses Web Crypto so it works in
- * both the proxy and route handlers. The signing secret comes from the
- * SESSION_SECRET environment variable — never hard-coded.
+ * Signed session token used by the LOCAL auth provider (development only).
+ * HS256 via Web Crypto so it works in both the proxy and route handlers.
+ * The signing secret comes from SESSION_SECRET — never hard-coded.
+ * With AUTH_PROVIDER=supabase, Supabase Auth issues and refreshes sessions instead.
  */
-export const SESSION_COOKIE = "co_session";
+export const LOCAL_SESSION_COOKIE = "co_session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
-export interface Session {
-  userId: string;
-  organizationId: string;
+export interface LocalSession {
+  sub: string;
+  email: string;
   exp: number;
 }
 
@@ -46,19 +47,19 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export async function createSessionToken(session: Omit<Session, "exp">): Promise<string> {
+export async function createSessionToken(session: Omit<LocalSession, "exp">): Promise<string> {
   const payload = b64url(enc.encode(JSON.stringify({ ...session, exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS })));
   return `${payload}.${await hmac(payload)}`;
 }
 
-export async function verifySessionToken(token: string | undefined): Promise<Session | null> {
+export async function verifySessionToken(token: string | undefined): Promise<LocalSession | null> {
   if (!token) return null;
   const [payload, sig] = token.split(".");
   if (!payload || !sig) return null;
   try {
     if (!safeEqual(sig, await hmac(payload))) return null;
-    const session = JSON.parse(b64urlDecode(payload)) as Session;
-    if (typeof session.exp !== "number" || session.exp < Date.now() / 1000) return null;
+    const session = JSON.parse(b64urlDecode(payload)) as LocalSession;
+    if (typeof session.exp !== "number" || session.exp < Date.now() / 1000 || typeof session.sub !== "string") return null;
     return session;
   } catch {
     return null;

@@ -1,42 +1,38 @@
 import "server-only";
 import { hoursUntilStockout, usageRates } from "@/domain/inventory/forecast";
-import { movementInputSchema, stockStatus, type MovementInput, type StockStatus } from "@/domain/inventory/types";
-import type { LocationScope } from "@/domain/locations/types";
+import { movementInputSchema, stockStatus, type InventoryItem, type MovementInput, type StockStatus } from "@/domain/inventory/types";
 import { round2 } from "@/lib/rng";
 import { HOUR, iso } from "@/lib/time";
-import { newId } from "../store/backend";
-import { ConflictError, DEMO_USER_ID, inScope, live, NotFoundError, ordersBetween } from "./context";
+import { requireLocationAccess, requirePermission, type AppContext } from "../context/app-context";
+import { ConflictError, NotFoundError } from "../errors";
+import { newId } from "../repositories/mappers";
 
-export async function getInventory(scope: LocationScope) {
-  const rt = await live();
-  const now = Date.now();
-  const { db } = rt;
-  const rates = usageRates(ordersBetween(rt, "all", now - 4 * HOUR, now + 1), db.menuItems, now);
-  const items = db.inventoryItems
-    .filter((i) => inScope(scope, i.locationId))
-    .map((i) => {
-      const status = stockStatus(i);
-      const rate = rates.get(`${i.locationId}:${i.key}`);
-      const usedBy = db.menuItems.filter((m) => m.recipe.some((r) => r.inventoryItemKey === i.key));
-      return {
-        ...i,
-        status,
-        usagePerHour: rate ?? 0,
-        hoursLeft: hoursUntilStockout(i, rate),
-        usedBy: usedBy.map((m) => ({ id: m.id, name: m.name })),
-        /** Menu items this ingredient makes unavailable right now. */
-        blocking: usedBy
-          .filter((m) => i.quantity < (m.recipe.find((r) => r.inventoryItemKey === i.key)?.quantity ?? 0))
-          .map((m) => ({ id: m.id, name: m.name })),
-      };
-    });
+export async function getInventory(ctx: AppContext) {
+  const now = ctx.now;
+  const [inventory, recent, { items: menu }, movements] = await Promise.all([
+    ctx.data.inventory(),
+    ctx.data.orders({ from: now - 4 * HOUR, to: now + 1, withItems: true }),
+    ctx.data.menu(),
+    ctx.repos.inventory.movements(ctx.scope.locationIds, 120),
+  ]);
+  const rates = usageRates(recent, menu, now);
+  const items = inventory.map((i) => {
+    const status = stockStatus(i);
+    const rate = rates.get(`${i.locationId}:${i.key}`);
+    const usedBy = menu.filter((m) => m.recipe.some((r) => r.inventoryItemKey === i.key));
+    return {
+      ...i,
+      status,
+      usagePerHour: rate ?? 0,
+      hoursLeft: hoursUntilStockout(i, rate),
+      usedBy: usedBy.map((m) => ({ id: m.id, name: m.name })),
+      blocking: usedBy
+        .filter((m) => i.quantity < (m.recipe.find((r) => r.inventoryItemKey === i.key)?.quantity ?? 0))
+        .map((m) => ({ id: m.id, name: m.name })),
+    };
+  });
   const counts: Record<StockStatus, number> = { healthy: 0, low: 0, critical: 0, out: 0 };
   for (const i of items) counts[i.status] += 1;
-  const itemIds = new Set(items.map((i) => i.id));
-  const movements = db.inventoryMovements
-    .filter((m) => itemIds.has(m.inventoryItemId))
-    .slice(-120)
-    .reverse();
   const unavailable = new Map<string, { id: string; name: string; locations: string[]; causes: string[] }>();
   for (const i of items) {
     for (const b of i.blocking) {
@@ -52,6 +48,7 @@ export async function getInventory(scope: LocationScope) {
     movements,
     unavailableMenuItems: [...unavailable.values()],
     stockValue: round2(items.reduce((s, i) => s + i.quantity * i.unitCost, 0)),
+    canManage: ctx.permissions.has("inventory.manage"),
   };
 }
 export type InventoryData = Awaited<ReturnType<typeof getInventory>>;
@@ -59,43 +56,89 @@ export type InventoryItemView = InventoryData["items"][number];
 
 export { movementInputSchema };
 
-export async function recordMovement(input: MovementInput) {
-  const rt = await live();
-  const { db } = rt;
-  const item = db.inventoryItems.find((i) => i.id === input.inventoryItemId);
+async function emitThresholdEvents(ctx: AppContext, before: InventoryItem, after: InventoryItem) {
+  const was = stockStatus(before);
+  const now = stockStatus(after);
+  if (was === now || (now !== "low" && now !== "out")) return;
+  await ctx.repos.events.append(
+    {
+      type: now === "out" ? "inventory.out_of_stock" : "inventory.low",
+      aggregateType: "inventory_item",
+      aggregateId: after.id,
+      locationId: after.locationId,
+      payload: { name: after.name, quantity: after.quantity, threshold: after.threshold, unit: after.unit },
+    },
+    ctx.actor,
+  );
+}
+
+/** Record a stock movement. Every movement keeps actor, time, organization, location, reason and quantity. */
+export async function recordMovement(ctx: AppContext, input: MovementInput) {
+  requirePermission(ctx, "inventory.manage");
+  const item = await ctx.repos.inventory.findItem(input.inventoryItemId, { forUpdate: true });
   if (!item) throw new NotFoundError("Inventory item");
-  const now = iso(Date.now());
+  requireLocationAccess(ctx, item.locationId);
+
   const magnitude = Math.abs(input.quantity);
-  const signed =
-    input.type === "purchase" ? magnitude : input.type === "adjustment" ? input.quantity : -magnitude;
-  if (item.quantity + signed < -0.0001) {
-    throw new ConflictError(`Only ${item.quantity} ${item.unit} of ${item.name} in stock.`);
-  }
-  const apply = (target: typeof item, qty: number, note?: string) => {
-    target.quantity = round2(Math.max(0, target.quantity + qty));
-    target.updatedAt = now;
-    db.inventoryMovements.push({
-      id: newId(db, "mov"),
-      organizationId: db.organization.id,
+  const signed = input.type === "purchase" ? magnitude : input.type === "adjustment" ? input.quantity : -magnitude;
+  if (item.quantity + signed < -0.0001) throw new ConflictError(`Only ${item.quantity} ${item.unit} of ${item.name} in stock.`);
+  const now = iso(Date.now());
+  const actorUserId = ctx.actor.kind === "user" ? ctx.actor.userId : null;
+
+  const apply = async (target: InventoryItem, qty: number, note: string | undefined) => {
+    const after: InventoryItem = { ...target, quantity: round2(Math.max(0, target.quantity + qty)), updatedAt: now };
+    await ctx.repos.inventory.setQuantity(target.id, after.quantity);
+    await ctx.repos.inventory.insertMovement({
+      id: newId("mov"),
+      organizationId: ctx.organization.id,
       locationId: target.locationId,
       inventoryItemId: target.id,
       type: input.type,
       quantity: round2(qty),
       note,
-      createdBy: DEMO_USER_ID,
+      actorUserId,
+      actorLabel: "user",
+      reason: input.note ?? input.type,
       createdAt: now,
       updatedAt: now,
     });
+    await ctx.repos.events.append(
+      {
+        type: "inventory.adjusted",
+        aggregateType: "inventory_item",
+        aggregateId: target.id,
+        locationId: target.locationId,
+        payload: { name: target.name, type: input.type, quantity: round2(qty), unit: target.unit, from: target.quantity, to: after.quantity },
+      },
+      ctx.actor,
+    );
+    await ctx.repos.audit.record(
+      {
+        action: "inventory.adjusted",
+        entityType: "inventory_item",
+        entityId: target.id,
+        locationId: target.locationId,
+        before: { quantity: target.quantity },
+        after: { quantity: after.quantity },
+        metadata: { type: input.type, quantity: round2(qty), note: note ?? null, name: target.name, unit: target.unit },
+      },
+      ctx.actor,
+    );
+    await emitThresholdEvents(ctx, target, after);
+    return after;
   };
+
   if (input.type === "transfer") {
-    const target = db.inventoryItems.find((i) => i.key === item.key && i.locationId === input.targetLocationId);
+    if (!input.targetLocationId) throw new ConflictError("Choose a destination location for the transfer.");
+    requireLocationAccess(ctx, input.targetLocationId);
+    const target = await ctx.repos.inventory.findByKey(input.targetLocationId, item.key, { forUpdate: true });
     if (!target || target.id === item.id) throw new ConflictError("Choose a different destination location for the transfer.");
-    const fromName = db.locations.find((l) => l.id === item.locationId)?.name;
-    const toName = db.locations.find((l) => l.id === target.locationId)?.name;
-    apply(item, -magnitude, input.note || `Transfer to ${toName}`);
-    apply(target, magnitude, input.note || `Transfer from ${fromName}`);
-  } else {
-    apply(item, signed, input.note);
+    const fromName = ctx.allowedLocations.find((l) => l.id === item.locationId)?.name;
+    const toName = ctx.allowedLocations.find((l) => l.id === target.locationId)?.name;
+    const after = await apply(item, -magnitude, input.note || `Transfer to ${toName}`);
+    await apply(target, magnitude, input.note || `Transfer from ${fromName}`);
+    return { ...after, status: stockStatus(after) };
   }
-  return { ...item, status: stockStatus(item) };
+  const after = await apply(item, signed, input.note);
+  return { ...after, status: stockStatus(after) };
 }

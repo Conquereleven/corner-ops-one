@@ -2,8 +2,10 @@ export interface Organization {
   id: string;
   name: string;
   slug: string;
-  currency: "AED";
+  currency: string;
   timezone: string;
+  /** Demo workspaces receive simulated traffic and can be reset. */
+  isDemo: boolean;
   createdAt: string;
   updatedAt: string;
 }

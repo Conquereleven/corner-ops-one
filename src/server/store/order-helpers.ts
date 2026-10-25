@@ -47,7 +47,7 @@ export function consumeInventoryForOrder(db: Database, order: UnifiedOrder, at: 
       quantity: -round2(qty),
       orderId: order.id,
       note: `${order.orderNumber} · ${CHANNEL_CATALOG[order.channel].shortName}`,
-      createdBy: "system",
+      actorLabel: "system",
       createdAt: iso(at),
       updatedAt: iso(at),
     });
