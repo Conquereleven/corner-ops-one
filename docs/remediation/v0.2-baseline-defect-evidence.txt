@@ -1,0 +1,36 @@
+== adversarial-sql (v0.2 baseline 6e6176f)
+     × kitchen staff cannot cancel an order with a direct UPDATE 70ms
+     × no member can rewrite financial fields of an order 13ms
+     × a direct status UPDATE cannot skip inventory, events and audit 13ms
+     × members cannot fabricate orders or order items 4ms
+     × members cannot forge audit entries 3ms
+     × kitchen staff cannot read menu food cost 3ms
+     × kitchen staff cannot read inventory unit cost 3ms
+     × kitchen staff cannot read commercial terms 3ms
+     × kitchen staff cannot read platform commission 4ms
+     × kitchen staff cannot read daily platform fees 3ms
+     × owners read costs through the financial functions 3ms
+     × a branch manager cannot change stock without a movement record 4ms
+     × an order cannot point at another organization's location or restaurant 1ms
+     × an order item cannot belong to a different location than its order 11ms
+     × an inventory movement cannot reference another organization's item 1ms
+     × the shared demo identity cannot create a production organization 2ms
+     × the shared demo identity cannot acquire a production membership via invitation 6ms
+     × is_demo cannot be changed by organization admins 6ms
+     × demo admins cannot add members to the demo organization with SQL 2ms
+     × no column except processing state can change, and events cannot be deleted 1ms
+⎯⎯⎯⎯⎯⎯ Failed Tests 20 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  20 failed | 3 passed (23)
+== inventory-integrity (v0.2 baseline 6e6176f)
+     × is refused for orders that have not been accepted (or were cancelled) 90ms
+     × concurrent calls consume exactly once 28ms
+     × the database rejects a second usage movement for the same order and item 29ms
+     × a shortage records the unmet demand instead of silently clamping 20ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  4 failed (4)
+== reliability (v0.2 baseline 6e6176f)
+     × serializes concurrent runners and applies each migration exactly once 284ms
+     × is not ready when migrations are missing or the ledger is absent 8ms
+     × demo actions do not open a second pooled transaction while holding one 10113ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+      Tests  3 failed (3)
