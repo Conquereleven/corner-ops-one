@@ -11,8 +11,8 @@ CornerOps One is a product of **CornerTech AI**. Proprietary and confidential �
 
 | | |
 |---|---|
-| Version | **0.2.0 — Production Foundation (in progress)** |
-| Status | Persistence, auth, multi-tenancy, roles, events and audit implemented and tested on local PostgreSQL. **Hosted Supabase integration is prepared but NOT VERIFIED** — see [docs/supabase.md](docs/supabase.md). |
+| Version | **0.2.1 — Security & Data Integrity Remediation** |
+| Status | Persistence, auth, multi-tenancy, roles, events and audit implemented and tested on local PostgreSQL, with database-enforced business rules. **Hosted Supabase integration is prepared but NOT VERIFIED** — see [docs/supabase.md](docs/supabase.md). Not production-ready. |
 
 ---
 
@@ -69,8 +69,12 @@ PostgreSQL (Supabase) with Row Level Security
 - **Every request is a transaction as the `authenticated` role** with the user's claims, so
   RLS applies to all reads and writes. Privileged "system" transactions are limited to the
   demo simulator/seed, migrations and the health check.
-- **Order status changes go through one function** (`transitionOrder`): lock order → state
-  machine → inventory usage (once) → channel write-back → event → audit, atomically.
+- **Order status changes go through one database operation** (`apply_order_transition`, called
+  by `transitionOrder`): lock order → state machine → inventory usage (once, shortage-safe) →
+  event → audit, atomically. Stock changes go through `record_inventory_movement`. Clients cannot
+  write orders, inventory or audit rows directly.
+- **Finance-only data** (commission, food cost, unit cost, commercial terms) is hidden from
+  roles without profitability access at the database (column privileges + finance functions).
 - **Ingestion is idempotent** on `(organization_id, channel_id, external_order_id)`.
 - The **kitchen board** reads the same order rows; `kitchen_tickets` is kept in sync by trigger.
 
@@ -99,7 +103,7 @@ docs/                RLS, Supabase, events & audit, credentials, Railway
 | Variable | Values | Effect |
 |---|---|---|
 | `APP_MODE` | `demo` · `production` | `production` disables the Demo Workspace entry, the simulator and access to demo organizations |
-| `APP_ENV` | `development` · `test` · `staging` · `production` | `staging`/`production` refuse the local auth stand-in |
+| `APP_ENV` | `development` · `test` · `staging` · `production` | `staging`/`production` refuse the local auth stand-in; any other value is a configuration error |
 | `AUTH_PROVIDER` | `supabase` · `local` | Supabase Auth, or the local development stand-in |
 
 Full inventory: [.env.example](.env.example) and [docs/deployment/railway.md](docs/deployment/railway.md).
@@ -130,7 +134,15 @@ enforces it, and RLS enforces it again. "All locations" means *all locations you
 ## Row Level Security
 
 Membership-based policies on every tenant table, location-scoped where relevant, append-only
-audit log, no `anon` access. Design and verification: **[docs/security/rls.md](docs/security/rls.md)**.
+database-written audit log, column-level privileges for finance data, tenant-aware foreign keys,
+no `anon` access. Design and verification: **[docs/security/rls.md](docs/security/rls.md)**;
+Supabase Data API exposure: **[docs/security/data-api.md](docs/security/data-api.md)**.
+
+## Inventory shortages
+
+Accepting an order deducts only the stock on hand, records the unmet quantity, raises a critical
+alert and blocks READY until a manager resolves it (reconcile from stock, or accept with a note).
+Policy: **[docs/inventory-shortage-policy.md](docs/inventory-shortage-policy.md)**.
 
 ## Demo Workspace vs production
 
@@ -154,11 +166,12 @@ Details: **[docs/events-and-audit.md](docs/events-and-audit.md)**.
 npm test
 ```
 
-The suite recreates `cornerops_test` from migrations, seeds the Demo Workspace plus a second
-tenant, and covers tenant isolation, location access, role restrictions, order lifecycle
-persistence (including a connection-pool "restart"), idempotency, inventory movements,
-event/audit atomicity and immutability, demo isolation/reset, team rules, permissions and
-configuration guards. Current result: **43 tests passing**.
+The suite recreates a **disposable** `cornerops_test` database from migrations (it refuses any
+other target — see `tests/support/db-safety.ts`), seeds the Demo Workspace plus a second tenant,
+and covers tenant isolation, location access, role restrictions, adversarial SQL as each role,
+order lifecycle persistence, idempotency and concurrency, the shortage policy, financial
+privacy, event/audit atomicity and immutability, demo isolation/reset, migrations, readiness
+and configuration guards. Current result: **30 unit + 84 integration tests passing**.
 
 ## What remains simulated
 
