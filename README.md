@@ -171,7 +171,7 @@ other target — see `tests/support/db-safety.ts`), seeds the Demo Workspace plu
 and covers tenant isolation, location access, role restrictions, adversarial SQL as each role,
 order lifecycle persistence, idempotency and concurrency, the shortage policy, financial
 privacy, event/audit atomicity and immutability, demo isolation/reset, migrations, readiness
-and configuration guards. Current result: **30 unit + 84 integration tests passing**.
+and configuration guards. Current result: **30 unit + 85 integration tests passing**.
 
 ## What remains simulated
 
