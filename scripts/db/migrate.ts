@@ -7,6 +7,12 @@
  *
  * --local-emulation first installs supabase/local/* (auth schema, roles) and is
  * refused for any hosted Supabase URL.
+ *
+ * Safety: runners are serialized with a session advisory lock (concurrent
+ * deploys wait instead of racing), and each migration file runs in its own
+ * transaction together with its ledger row, so a failure leaves neither a
+ * half-applied file nor an unrecorded one. Checksums are computed on the file
+ * exactly as committed.
  */
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -14,6 +20,30 @@ import { join, resolve } from "node:path";
 import postgres from "postgres";
 
 const ROOT = resolve(__dirname, "../..");
+const LOCK_KEY = "cornerops:schema-migrations";
+
+/**
+ * Files wrap themselves in a top-level `begin;` … `commit;` (so they also work
+ * with psql / supabase db push). The runner supplies the transaction instead,
+ * so those two statements are removed — only exact top-level lines, never
+ * anything inside function bodies (PL/pgSQL `begin` has no semicolon).
+ */
+export function transactionalBody(body: string): string {
+  const lines = body.split("\n");
+  const first = lines.findIndex((l) => l.trim().toLowerCase() === "begin;");
+  let last = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].trim().toLowerCase() === "commit;") {
+      last = i;
+      break;
+    }
+  }
+  if (first !== -1 && last > first) {
+    lines[first] = "";
+    lines[last] = "";
+  }
+  return lines.join("\n");
+}
 
 export async function migrate(url: string, opts: { localEmulation?: boolean; log?: (m: string) => void } = {}) {
   const log = opts.log ?? console.log;
@@ -22,9 +52,11 @@ export async function migrate(url: string, opts: { localEmulation?: boolean; log
   }
   const sql = postgres(url, { max: 1, onnotice: () => {} });
   try {
+    // Session-level lock on the single connection: held until released below or the connection ends.
+    await sql`select pg_advisory_lock(hashtext(${LOCK_KEY}))`;
     if (opts.localEmulation) {
       for (const f of readdirSync(join(ROOT, "supabase/local")).filter((f) => f.endsWith(".sql")).sort()) {
-        await sql.unsafe(readFileSync(join(ROOT, "supabase/local", f), "utf8"));
+        await sql.begin((tx) => tx.unsafe(transactionalBody(readFileSync(join(ROOT, "supabase/local", f), "utf8"))));
       }
     }
     await sql.unsafe(`
@@ -43,14 +75,17 @@ export async function migrate(url: string, opts: { localEmulation?: boolean; log
         if (applied.get(version) !== checksum) throw new Error(`Migration ${file} changed after it was applied (checksum mismatch).`);
         continue;
       }
-      await sql.unsafe(body);
-      await sql`insert into cornerops_internal.schema_migrations (version, name, checksum) values (${version}, ${file}, ${checksum})`;
+      await sql.begin(async (tx) => {
+        await tx.unsafe(transactionalBody(body));
+        await tx`insert into cornerops_internal.schema_migrations (version, name, checksum) values (${version}, ${file}, ${checksum})`;
+      });
       log(`applied ${file}`);
       count += 1;
     }
     log(count ? `${count} migration(s) applied` : "database is up to date");
     return { applied: count, total: files.length };
   } finally {
+    await sql`select pg_advisory_unlock_all()`.catch(() => {});
     await sql.end();
   }
 }

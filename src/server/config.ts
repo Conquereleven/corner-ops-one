@@ -10,9 +10,14 @@ import { ConfigurationError } from "./errors";
 export type AppMode = "demo" | "production";
 export type AuthProviderName = "supabase" | "local";
 
-export function appEnv(): "development" | "test" | "staging" | "production" {
+const APP_ENVS = ["development", "test", "staging", "production"] as const;
+export type AppEnv = (typeof APP_ENVS)[number];
+
+/** Unknown values are a configuration error — never silently treated as development. */
+export function appEnv(): AppEnv {
   const v = process.env.APP_ENV ?? (process.env.NODE_ENV === "production" ? "production" : "development");
-  return (["development", "test", "staging", "production"].includes(v) ? v : "development") as ReturnType<typeof appEnv>;
+  if (!(APP_ENVS as readonly string[]).includes(v)) throw new ConfigurationError(`APP_ENV must be one of ${APP_ENVS.join(", ")} (got "${v}")`);
+  return v as AppEnv;
 }
 
 export function appMode(): AppMode {

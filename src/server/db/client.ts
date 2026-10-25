@@ -9,10 +9,10 @@ export type Db = postgres.Sql<any> | postgres.TransactionSql<any>;
 
 const toIso = (v: unknown) => (v instanceof Date ? v.toISOString() : v);
 
-function createClient(url: string): Sql {
+function createClient(url: string, max: number): Sql {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return postgres<any>(url, {
-    max: Number(process.env.DATABASE_POOL_MAX ?? 10),
+    max,
     idle_timeout: 20,
     connect_timeout: 10,
     // Supabase's transaction pooler does not support prepared statements.
@@ -32,7 +32,7 @@ function createClient(url: string): Sql {
   });
 }
 
-const globalForDb = globalThis as unknown as { __corneropsSql?: Sql; __corneropsSqlUrl?: string };
+const globalForDb = globalThis as unknown as { __corneropsSql?: Sql; __corneropsSqlUrl?: string; __corneropsSystemSql?: Sql; __corneropsSystemSqlUrl?: string };
 
 export function databaseUrl(): string {
   const url = process.env.DATABASE_URL;
@@ -40,17 +40,31 @@ export function databaseUrl(): string {
   return url;
 }
 
-/** Process-wide connection pool. */
+/** Process-wide connection pool for user (RLS) requests. */
 export function getSql(): Sql {
   const url = databaseUrl();
   if (!globalForDb.__corneropsSql || globalForDb.__corneropsSqlUrl !== url) {
-    globalForDb.__corneropsSql = createClient(url);
+    globalForDb.__corneropsSql = createClient(url, Number(process.env.DATABASE_POOL_MAX ?? 10));
     globalForDb.__corneropsSqlUrl = url;
   }
   return globalForDb.__corneropsSql;
 }
 
+/**
+ * Small separate pool for system work (demo simulator, session bootstrap), so
+ * background simulation can never starve or deadlock the request pool.
+ */
+export function getSystemSql(): Sql {
+  const url = databaseUrl();
+  if (!globalForDb.__corneropsSystemSql || globalForDb.__corneropsSystemSqlUrl !== url) {
+    globalForDb.__corneropsSystemSql = createClient(url, Number(process.env.DATABASE_SYSTEM_POOL_MAX ?? 3));
+    globalForDb.__corneropsSystemSqlUrl = url;
+  }
+  return globalForDb.__corneropsSystemSql;
+}
+
 export async function closeSql() {
-  await globalForDb.__corneropsSql?.end({ timeout: 5 });
+  await Promise.all([globalForDb.__corneropsSql?.end({ timeout: 5 }), globalForDb.__corneropsSystemSql?.end({ timeout: 5 })]);
   globalForDb.__corneropsSql = undefined;
+  globalForDb.__corneropsSystemSql = undefined;
 }

@@ -1,5 +1,5 @@
 import { fromDatabaseError } from "../errors";
-import { getSql, type Db } from "./client";
+import { getSql, getSystemSql, type Db } from "./client";
 
 /** Who is performing a write. Recorded on events, audit logs and movements. */
 export type Actor = { kind: "user"; userId: string } | { kind: "system"; label: string };
@@ -44,5 +44,5 @@ export function withUserTransaction<T>(userId: string, fn: (tx: Db) => Promise<T
  * guards: demo seeding/reset/simulation, session bootstrap, migrations, health.
  */
 export function withSystemTransaction<T>(fn: (tx: Db) => Promise<T>): Promise<T> {
-  return guard(() => getSql().begin((tx) => fn(tx)) as Promise<T>);
+  return guard(() => getSystemSql().begin((tx) => fn(tx)) as Promise<T>);
 }
