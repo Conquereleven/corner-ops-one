@@ -1,5 +1,11 @@
 @AGENTS.md
 
+## CornerTech operating standards (effective only after an independently reviewed, Founder-approved merge)
+
+Follow [Execution Standard 1.0](docs/governance/execution-standard.md) as the canonical delivery/closure policy and [CT-WCOS v1.0](docs/governance/world-class-operating-standard.md) as the cross-functional quality bar. Preserve all stronger project-specific security and release constraints below.
+
+Claude Chat is the **advisory Virtual CTO**, not Claude Code. Claude Code and Codex are equal-status engineering peers; either may implement or independently review, but never self-approve an implementation. Each material task needs one DRI, an exact scope and SHA, positive/negative tests, independent findings when required, risks and Founder approval at gated actions. Track PREPARED / EXECUTED / VERIFIED / CLOSED / BLOCKED truthfully; local tests do not prove hosted acceptance. Do not merge, deploy, provision, spend or touch customer data without their own authorization.
+
 # CornerOps One — working notes (CornerTech AI)
 
 - Layers: UI → API routes/pages → services (`src/server/services`) → repositories (`src/server/repositories`) → Postgres. Components never query the DB.
