@@ -1,9 +1,14 @@
 /**
  * Applies supabase/migrations/*.sql in version order and records them in
- * cornerops_internal.schema_migrations. Used for local development, tests and
- * CI. (For hosted Supabase, `supabase db push` applies the same files.)
+ * cornerops_internal.schema_migrations. Used for local development, tests, CI
+ * and (as a gated, manual step) hosted environments.
  *
- *   DATABASE_URL=... npm run db:migrate [-- --local-emulation]
+ *   npm run db:migrate [-- --local-emulation]      local (.env.local)
+ *   npm run db:migrate:status                      read-only plan: applied / pending / changed
+ *   npm run db:migrate:deploy                      MIGRATION_DATABASE_URL + MIGRATION_CONFIRM
+ *
+ * Connection rules (direct/session connection, no transaction pooler, explicit
+ * confirmation for non-local targets) live in ./migration-config.ts.
  *
  * --local-emulation first installs supabase/local/* (auth schema, roles) and is
  * refused for any hosted Supabase URL.
@@ -18,6 +23,8 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import postgres from "postgres";
+
+import { MigrationConfigError, resolveMigrationTarget } from "./migration-config";
 
 const ROOT = resolve(__dirname, "../..");
 const LOCK_KEY = "cornerops:schema-migrations";
@@ -45,6 +52,39 @@ export function transactionalBody(body: string): string {
   return lines.join("\n");
 }
 
+export function migrationFiles(target?: string) {
+  return readdirSync(join(ROOT, "supabase/migrations"))
+    .filter((f) => /^\d{14}_.+\.sql$/.test(f))
+    .sort()
+    .filter((f) => !target || f.slice(0, 14) <= target)
+    .map((file) => {
+      const body = readFileSync(join(ROOT, "supabase/migrations", file), "utf8");
+      return { file, version: file.slice(0, 14), body, checksum: createHash("sha256").update(body).digest("hex") };
+    });
+}
+
+/** Read-only comparison of the ledger with this build's migration files. */
+export async function migrationStatus(url: string) {
+  const sql = postgres(url, { max: 1, onnotice: () => {} });
+  try {
+    const [ledger] = await sql`select to_regclass('cornerops_internal.schema_migrations') is not null as present`;
+    const applied = ledger.present
+      ? new Map((await sql`select version, checksum from cornerops_internal.schema_migrations`).map((r) => [String(r.version), String(r.checksum)]))
+      : new Map<string, string>();
+    const files = migrationFiles();
+    const known = new Set(files.map((f) => f.version));
+    return {
+      pending: files.filter((f) => !applied.has(f.version)).map((f) => f.file),
+      changed: files.filter((f) => applied.has(f.version) && applied.get(f.version) !== f.checksum).map((f) => f.file),
+      /** Applied in the database but unknown to this build (the build is older than the schema). */
+      unknown: [...applied.keys()].filter((v) => !known.has(v)).sort(),
+      appliedCount: applied.size,
+    };
+  } finally {
+    await sql.end();
+  }
+}
+
 export async function migrate(url: string, opts: { localEmulation?: boolean; log?: (m: string) => void; target?: string } = {}) {
   const log = opts.log ?? console.log;
   if (opts.localEmulation && /supabase\.(co|com)/.test(url)) {
@@ -66,15 +106,9 @@ export async function migrate(url: string, opts: { localEmulation?: boolean; log
       );`);
     const applied = new Map((await sql`select version, checksum from cornerops_internal.schema_migrations`).map((r) => [r.version as string, r.checksum as string]));
     // `target` (a version) stops after that migration — used to build older schemas for upgrade tests.
-    const files = readdirSync(join(ROOT, "supabase/migrations"))
-      .filter((f) => /^\d{14}_.+\.sql$/.test(f))
-      .sort()
-      .filter((f) => !opts.target || f.slice(0, 14) <= opts.target);
+    const files = migrationFiles(opts.target);
     let count = 0;
-    for (const file of files) {
-      const version = file.slice(0, 14);
-      const body = readFileSync(join(ROOT, "supabase/migrations", file), "utf8");
-      const checksum = createHash("sha256").update(body).digest("hex");
+    for (const { file, version, body, checksum } of files) {
       if (applied.has(version)) {
         if (applied.get(version) !== checksum) throw new Error(`Migration ${file} changed after it was applied (checksum mismatch).`);
         continue;
@@ -94,14 +128,22 @@ export async function migrate(url: string, opts: { localEmulation?: boolean; log
   }
 }
 
-if (require.main === module) {
-  const url = process.env.DATABASE_URL;
-  if (!url) {
-    console.error("DATABASE_URL is required");
-    process.exit(1);
+async function main() {
+  const statusOnly = process.argv.includes("--status");
+  const latestVersion = migrationFiles().at(-1)?.version ?? "";
+  const { url } = resolveMigrationTarget(process.env, { latestVersion, statusOnly });
+  if (statusOnly) {
+    const s = await migrationStatus(url);
+    console.log(JSON.stringify({ latestInBuild: latestVersion, ...s }, null, 2));
+    if (s.changed.length) process.exitCode = 2;
+    return;
   }
-  migrate(url, { localEmulation: process.argv.includes("--local-emulation") }).catch((err) => {
-    console.error(err.message);
+  await migrate(url, { localEmulation: process.argv.includes("--local-emulation") });
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err instanceof MigrationConfigError ? `[migrate] ${err.message}` : err.message);
     process.exit(1);
   });
 }

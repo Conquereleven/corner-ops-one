@@ -17,6 +17,7 @@
     "db:migrate": "tsx --env-file=.env.local scripts/db/migrate.ts",
     "db:seed:demo": "tsx --env-file=.env.local --tsconfig tsconfig.json scripts/db/seed-demo.ts",
     "db:migrate:deploy": "tsx scripts/db/migrate.ts",
+    "db:migrate:status": "tsx scripts/db/migrate.ts --status",
     "test:unit": "vitest run --project unit",
     "test:integration": "CORNEROPS_TEST_DB_DISPOSABLE=1 vitest run --project integration"
   },
