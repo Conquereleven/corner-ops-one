@@ -150,7 +150,6 @@ async function incidents(repos: Repositories, runtime: ChannelRuntime, world: Wo
     if (conn && conn.status === "degraded") {
       backend.setConnectionStatus(conn.channel, "connected", { locationId: conn.locationId, latencyMs: Math.round(conn.latencyMs / 12) + 150 });
       backend.log(conn.channel, "info", "Latency back to normal (simulated recovery)", conn.locationId);
-      await repos.events.append({ type: "channel.connected", aggregateType: "channel_connection", aggregateId: conn.id, locationId: conn.locationId, payload: { channel: conn.channel, reason: "simulated recovery" } }, SIMULATOR);
       feed(state, "channel_recovered", `${channelName(conn.channel)} recovered`, now);
     }
   }
@@ -164,7 +163,6 @@ async function incidents(repos: Repositories, runtime: ChannelRuntime, world: Wo
   const latency = rng.int(2600, 5200);
   backend.setConnectionStatus(conn.channel, "degraded", { locationId: conn.locationId, latencyMs: latency, message: "Elevated API latency (simulated incident)" });
   backend.log(conn.channel, "warning", `API latency ${latency}ms — above 2s threshold (simulated)`, conn.locationId);
-  await repos.events.append({ type: "channel.degraded", aggregateType: "channel_connection", aggregateId: conn.id, locationId: conn.locationId, payload: { channel: conn.channel, latencyMs: latency, simulated: true } }, SIMULATOR);
   state.recoveries.push({ connectionId: conn.id, at: now + (1.5 + rng.next() * 2) * MINUTE });
   const loc = world.db.locations.find((l) => l.id === conn.locationId);
   feed(state, "channel_incident", `${channelName(conn.channel)} degraded at ${loc?.name ?? ""}`, now);

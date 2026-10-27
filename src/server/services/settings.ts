@@ -81,9 +81,8 @@ export async function updateSettings(ctx: AppContext, patch: z.infer<typeof sett
     for (const [ch, e] of Object.entries(patch.economics)) Object.assign(economics[ch as keyof typeof economics], e);
   }
   const sections = (["sla", "economics", "demo"] as const).filter((k) => patch[k]);
-  // The audit entry (before/after per section) is written by the database trigger on organization_settings.
+  // settings.updated event and audit entry (before/after per section): database triggers.
   await ctx.repos.organization.updateSettings(next, [...sections]);
-  await ctx.repos.events.append({ type: "settings.updated", aggregateType: "organization", aggregateId: ctx.organization.id, payload: { sections } }, ctx.actor);
   return next;
 }
 

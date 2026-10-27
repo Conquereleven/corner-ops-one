@@ -80,8 +80,7 @@ export async function updateLocation(ctx: AppContext, id: string, patch: z.infer
   requirePermission(ctx, "locations.manage");
   requireLocationAccess(ctx, id);
   const after = await ctx.repos.locations.update(id, patch);
-  // Audited by the database trigger on locations (before/after of changed columns).
-  await ctx.repos.events.append({ type: "location.updated", aggregateType: "location", aggregateId: id, locationId: id, payload: { name: after.name, changes: patch } }, ctx.actor);
+  // location.updated event and audit entry: database triggers on locations.
   return after;
 }
 
@@ -100,6 +99,5 @@ export async function createLocation(ctx: AppContext, input: z.infer<typeof crea
   if (!["OWNER", "ADMIN"].includes(ctx.membership.role)) requirePermission(ctx, "organization.manage");
   const restaurant = await ctx.repos.organization.restaurant();
   const location = await ctx.repos.locations.create({ ...input, restaurantId: restaurant.id });
-  await ctx.repos.events.append({ type: "location.updated", aggregateType: "location", aggregateId: location.id, locationId: location.id, payload: { created: true, name: location.name } }, ctx.actor);
   return location;
 }

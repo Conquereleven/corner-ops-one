@@ -102,15 +102,7 @@ export async function updateMenuItem(ctx: AppContext, id: string, patch: z.infer
       ORDER_CHANNELS.map((channel) => ({ channel, level: "info" as const, message: `"${after.name}" marked ${after.isAvailable ? "available" : "unavailable"} (simulated availability push)`, at: now })),
     );
   }
-  await ctx.repos.events.append(
-    {
-      type: availabilityChanged ? "menu.availability_changed" : "menu.item_updated",
-      aggregateType: "menu_item",
-      aggregateId: id,
-      payload: { name: after.name, sku: after.sku, changes: patch },
-    },
-    ctx.actor,
-  );
+  // The menu.* event and audit entry are written by database triggers on menu_items.
   return after;
 }
 
@@ -128,11 +120,5 @@ export async function syncMenu(ctx: AppContext, input: z.infer<typeof menuSyncSc
   );
   for (const m of targets) await ctx.repos.menu.updateMapping({ ...m, status: "pending", message: PUBLISHING, updatedAt: now });
   await ctx.repos.channels.insertLogs([{ channel: input.channel, level: "info", message: `Menu publish requested for ${targets.length} item(s) (simulated)`, at: now }]);
-  if (targets.length) {
-    await ctx.repos.events.append(
-      { type: "menu.publish_requested", aggregateType: "channel", aggregateId: input.channel, payload: { items: targets.map((t) => t.menuItemId), simulated: true } },
-      ctx.actor,
-    );
-  }
   return { queued: targets.length };
 }

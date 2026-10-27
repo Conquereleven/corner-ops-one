@@ -74,20 +74,8 @@ export async function runConnectionAction(ctx: AppContext, channel: OrderChannel
     if (input.action === "reconnect") runtime.backend.log(channel, "info", "Reconnecting… (mock handshake)", input.locationId);
     for (const c of before.values()) await adapter.connect(c.locationId);
   }
-  for (const c of runtime.backend.changedConnections()) {
-    const prev = before.get(c.id);
-    if (!prev || prev.status === c.status) continue;
-    await ctx.repos.events.append(
-      {
-        type: c.status === "connected" ? "channel.connected" : c.status === "disconnected" ? "channel.disconnected" : "channel.degraded",
-        aggregateType: "channel_connection",
-        aggregateId: c.id,
-        locationId: c.locationId,
-        payload: { channel, from: prev.status, to: c.status, mode: c.mode },
-      },
-      ctx.actor,
-    );
-  }
+  // channel.connected / disconnected / degraded events and the audit entry are
+  // written by database triggers when the connection row changes.
   await runtime.backend.flush(ctx.repos, "user");
   return adapter.getHealth();
 }

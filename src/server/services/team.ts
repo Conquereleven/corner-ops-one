@@ -3,7 +3,6 @@ import { z } from "zod";
 import { assignableRoles, isLocationRestricted, roleSchema, type Role } from "@/domain/auth/permissions";
 import { requirePermission, type AppContext } from "../context/app-context";
 import { ConflictError, ForbiddenError, NotFoundError } from "../errors";
-import type { Membership } from "../repositories/memberships";
 
 export async function getTeam(ctx: AppContext) {
   requirePermission(ctx, "team.view");
@@ -40,8 +39,6 @@ function checkRoleAndLocations(ctx: AppContext, role: Role, locationIds: string[
   if (isLocationRestricted(role) && locationIds.length === 0) throw new ConflictError("Branch managers and kitchen staff need at least one location.");
 }
 
-const view = (m: Membership) => ({ role: m.role, status: m.status, locationIds: m.locationIds, email: m.email });
-
 /**
  * Invite a teammate. Creates a pending membership that is claimed when a user
  * with that (confirmed) email signs in. Email delivery is not part of v0.2 —
@@ -54,7 +51,6 @@ export async function inviteMember(ctx: AppContext, input: z.infer<typeof invite
   const existing = (await ctx.repos.memberships.list()).find((m) => m.email?.toLowerCase() === input.email);
   if (existing) throw new ConflictError("This person is already a member or has a pending invitation.");
   const m = await ctx.repos.memberships.invite({ email: input.email, role: input.role, locationIds, invitedBy: ctx.user.id });
-  await ctx.repos.events.append({ type: "membership.invited", aggregateType: "membership", aggregateId: m.id, payload: { email: input.email, role: input.role, locationIds } }, ctx.actor);
   return m;
 }
 
@@ -83,11 +79,7 @@ export async function updateMember(ctx: AppContext, id: string, patch: z.infer<t
     await ctx.repos.memberships.setLocations(id, locationIds);
     after = (await ctx.repos.memberships.findById(id))!;
   }
-  const action =
-    patch.status && patch.status !== before.status ? (patch.status === "disabled" ? "membership.disabled" : "membership.enabled")
-    : patch.role && patch.role !== before.role ? "membership.role_changed"
-    : "membership.locations_changed";
-  await ctx.repos.events.append({ type: "membership.updated", aggregateType: "membership", aggregateId: id, payload: { action, ...view(after) } }, ctx.actor);
+  // membership.* events and audit entries are written by database triggers.
   return after;
 }
 
