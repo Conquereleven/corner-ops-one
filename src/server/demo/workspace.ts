@@ -7,6 +7,7 @@ import { ConfigurationError, ForbiddenError } from "../errors";
 import { createRepositories } from "../repositories";
 import { ORG_ID } from "../seed/catalog";
 import { generateDemoDatabase } from "../seed/generate";
+import { registerDemoIdentity } from "./identity";
 import { persistWorkspace } from "./persist";
 
 export const DEMO_ORGANIZATION_ID = ORG_ID;
@@ -27,7 +28,7 @@ async function seedDemo(db: Db, now: number) {
  */
 async function ensureDemoUser(db: Db): Promise<string> {
   const id = await findOrCreateDemoUser(db);
-  await db`insert into public.demo_identities (user_id) values (${id}) on conflict do nothing`;
+  await registerDemoIdentity(db, id);
   return id;
 }
 

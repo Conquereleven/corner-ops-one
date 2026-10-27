@@ -45,7 +45,7 @@ export function transactionalBody(body: string): string {
   return lines.join("\n");
 }
 
-export async function migrate(url: string, opts: { localEmulation?: boolean; log?: (m: string) => void } = {}) {
+export async function migrate(url: string, opts: { localEmulation?: boolean; log?: (m: string) => void; target?: string } = {}) {
   const log = opts.log ?? console.log;
   if (opts.localEmulation && /supabase\.(co|com)/.test(url)) {
     throw new Error("Refusing to install local Supabase emulation on a hosted Supabase database.");
@@ -65,7 +65,11 @@ export async function migrate(url: string, opts: { localEmulation?: boolean; log
         version text primary key, name text not null, checksum text not null, applied_at timestamptz not null default now()
       );`);
     const applied = new Map((await sql`select version, checksum from cornerops_internal.schema_migrations`).map((r) => [r.version as string, r.checksum as string]));
-    const files = readdirSync(join(ROOT, "supabase/migrations")).filter((f) => /^\d{14}_.+\.sql$/.test(f)).sort();
+    // `target` (a version) stops after that migration — used to build older schemas for upgrade tests.
+    const files = readdirSync(join(ROOT, "supabase/migrations"))
+      .filter((f) => /^\d{14}_.+\.sql$/.test(f))
+      .sort()
+      .filter((f) => !opts.target || f.slice(0, 14) <= opts.target);
     let count = 0;
     for (const file of files) {
       const version = file.slice(0, 14);

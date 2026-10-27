@@ -67,6 +67,8 @@ export async function resolveIdentity(
     select m.id as membership_id, m.role, o.*
     from public.organization_memberships m join public.organizations o on o.id = m.organization_id
     where m.user_id = ${user.id} and m.status = 'active'
+      -- A shared demo identity never acts outside demo organizations (also enforced by every RLS helper).
+      and (o.is_demo or not private.is_demo_identity(m.user_id))
     order by o.is_demo, m.created_at`;
   const memberships: (MembershipSummary & { org: Organization })[] = rows
     .map((r) => ({

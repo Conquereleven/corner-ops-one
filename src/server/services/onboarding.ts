@@ -2,7 +2,8 @@ import "server-only";
 import { z } from "zod";
 import type { SessionUser } from "../auth/types";
 import { withUserTransaction } from "../db/transaction";
-import { ConflictError } from "../errors";
+import { isDemoEmail } from "../demo/identity";
+import { ConflictError, ForbiddenError } from "../errors";
 import { defaultSettings } from "../seed/generate";
 
 export const createOrganizationSchema = z.object({
@@ -19,6 +20,8 @@ function slugify(name: string) {
 
 /** A signed-in user without a membership creates their organization and becomes its OWNER. */
 export async function createOrganization(user: SessionUser, input: z.infer<typeof createOrganizationSchema>) {
+  // The database refuses this too (create_organization checks demo_identities).
+  if (isDemoEmail(user.email)) throw new ForbiddenError("The shared demo identity cannot create organizations.");
   const settings = defaultSettings();
   settings.demo.enabled = false; // production organizations never receive simulated traffic
   return withUserTransaction(user.id, async (db) => {

@@ -5,6 +5,7 @@ import type { Permission } from "@/domain/auth/permissions";
 import { getAuthProvider, type SessionUser } from "../auth";
 import { appMode } from "../config";
 import { withUserTransaction } from "../db/transaction";
+import { ensureDemoIdentityForSession } from "../demo/identity";
 import { tickDemoWorkspace } from "../demo/simulation";
 import { UnauthenticatedError } from "../errors";
 import { buildAppContext, requirePermission, resolveIdentity, resolveScope, type AppContext, type ResolvedIdentity } from "./app-context";
@@ -15,9 +16,10 @@ export const LOCATION_COOKIE = "co_location";
 /** Per-request (React cache) session lookup. */
 export const getSessionUser = cache(async (): Promise<SessionUser | null> => getAuthProvider().getUser());
 
-const getIdentity = cache(async (user: SessionUser, preferredOrganizationId: string | null): Promise<ResolvedIdentity> =>
-  withUserTransaction(user.id, (db) => resolveIdentity(db, user, { preferredOrganizationId, includeDemo: appMode() === "demo" })),
-);
+const getIdentity = cache(async (user: SessionUser, preferredOrganizationId: string | null): Promise<ResolvedIdentity> => {
+  await ensureDemoIdentityForSession(user);
+  return withUserTransaction(user.id, (db) => resolveIdentity(db, user, { preferredOrganizationId, includeDemo: appMode() === "demo" }));
+});
 
 export async function currentIdentity(): Promise<ResolvedIdentity> {
   const user = await getSessionUser();
