@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { assertDisposableTestDatabase } from "../support/db-safety";
+import { assertDisposableTestDatabase, verifyDisposableServer } from "../support/db-safety";
 import { migrate } from "../../scripts/db/migrate";
 
 describe("migration runner", () => {
@@ -8,6 +8,7 @@ describe("migration runner", () => {
     const base = assertDisposableTestDatabase(process.env.TEST_DATABASE_URL ?? "postgres://postgres@127.0.0.1:54329/cornerops_test");
     const scratch = assertDisposableTestDatabase(base.url.replace(/\/cornerops_test(_[a-z0-9]+)?$/, "/cornerops_test_migrations"));
     const admin = postgres(scratch.adminUrl, { max: 1, onnotice: () => {} });
+    await verifyDisposableServer(admin as never);
     await admin.unsafe(`drop database if exists ${scratch.quotedDatabase} with (force)`);
     await admin.unsafe(`create database ${scratch.quotedDatabase}`);
     try {

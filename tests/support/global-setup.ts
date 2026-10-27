@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
-import { assertDisposableTestDatabase } from "./db-safety";
+import { assertDisposableTestDatabase, verifyDisposableServer } from "./db-safety";
 
 const DEFAULT_LOCAL_URL = "postgres://postgres@127.0.0.1:54329/cornerops_test";
 
@@ -25,6 +25,13 @@ export default async function setup() {
   const { migrate } = await import("../../scripts/db/migrate");
   const admin = postgres(target.adminUrl, { max: 1, onnotice: () => {} });
   try {
+    // The server itself must prove it is disposable before anything is dropped.
+    try {
+      await verifyDisposableServer(admin as never);
+    } catch (err) {
+      process.stderr.write(`\n[cornerops] ${(err as Error).message}\n\n`);
+      throw err;
+    }
     await admin.unsafe(`drop database if exists ${target.quotedDatabase} with (force)`);
     await admin.unsafe(`create database ${target.quotedDatabase}`);
   } finally {

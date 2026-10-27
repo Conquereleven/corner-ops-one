@@ -2,7 +2,9 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { LOCAL_SESSION_COOKIE, verifySessionToken } from "@/server/auth/session";
 
-const PUBLIC_PATHS = ["/login", "/signup", "/api/auth/", "/api/health"];
+/** Exact paths, or prefixes ending in "/" (so "/api/healthz" is not public). */
+const PUBLIC_PATHS = ["/login", "/signup", "/api/auth/"];
+const isPublicPath = (pathname: string) => PUBLIC_PATHS.some((p) => (p.endsWith("/") ? pathname.startsWith(p) : pathname === p));
 
 function supabaseAuthEnabled() {
   return (process.env.AUTH_PROVIDER ?? (process.env.NEXT_PUBLIC_SUPABASE_URL ? "supabase" : "local")) === "supabase";
@@ -35,7 +37,9 @@ async function supabaseSession(request: NextRequest): Promise<{ response: NextRe
  */
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p));
+  // Health probes never depend on auth configuration (liveness must work even when Supabase settings are incomplete).
+  if (pathname === "/api/health" || pathname.startsWith("/api/health/")) return NextResponse.next();
+  const isPublic = isPublicPath(pathname);
 
   let response = NextResponse.next();
   let signedIn = false;

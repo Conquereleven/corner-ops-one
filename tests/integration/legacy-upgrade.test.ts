@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveIdentity } from "@/server/context/app-context";
 import { registerDemoIdentity } from "@/server/demo/identity";
 import { migrate } from "../../scripts/db/migrate";
-import { assertDisposableTestDatabase } from "../support/db-safety";
+import { assertDisposableTestDatabase, verifyDisposableServer } from "../support/db-safety";
 
 const V020_HEAD = "20261025100400"; // last migration of v0.2.0 (6e6176f)
 const AUDITED_HEAD = "20261026100300"; // last migration at the audited commit 458802a
@@ -50,6 +50,7 @@ const visibleProdOrgs = (userId: string) =>
 
 beforeAll(async () => {
   admin = postgres(scratch.adminUrl, { max: 1, onnotice: () => {} });
+  await verifyDisposableServer(admin as never);
   await admin.unsafe(`drop database if exists ${scratch.quotedDatabase} with (force)`);
   await admin.unsafe(`create database ${scratch.quotedDatabase}`);
   await migrate(scratch.url, { localEmulation: true, target: V020_HEAD, log: () => {} });

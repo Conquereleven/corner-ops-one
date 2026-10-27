@@ -7,7 +7,9 @@ export LC_ALL=C LANG=C
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DATA="$ROOT/.local/postgres"
 PORT="${LOCAL_PG_PORT:-54329}"
-DBS=("cornerops" "cornerops_test")
+# cornerops_disposable_cluster marks this cluster as owned by the project and
+# disposable; the integration-test guard refuses servers without it.
+DBS=("cornerops" "cornerops_test" "cornerops_disposable_cluster")
 
 start() {
   if [ ! -d "$DATA" ]; then

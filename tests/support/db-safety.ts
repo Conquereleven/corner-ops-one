@@ -11,6 +11,14 @@
  *   4. host must be loopback (127.0.0.1, ::1, localhost) — no hosted, pooler or shared hosts
  *   5. no connection parameters that can redirect the host (host, hostaddr, service, …)
  *   6. database name must match ^cornerops_test(_[a-z0-9]{1,32})?$
+ *
+ * A loopback hostname alone does not prove the server is ours (an SSH tunnel or
+ * port-forward to a hosted database also looks like 127.0.0.1). Before anything
+ * destructive, verifyDisposableServer() therefore checks the server itself:
+ *
+ *   7. the cluster carries the ownership marker database `cornerops_disposable_cluster`,
+ *      created only by scripts/db/local.sh (project-local cluster) and the CI service container
+ *   8. no managed-service fingerprint (Supabase, RDS, Cloud SQL, Azure admin roles)
  */
 export interface DisposableDatabase {
   url: string;
@@ -69,4 +77,40 @@ export function assertDisposableTestDatabase(raw: string | undefined, env: Recor
   const admin = new URL(url.toString());
   admin.pathname = "/postgres";
   return { url: url.toString(), adminUrl: admin.toString(), host, port, database, quotedDatabase: quoteIdentifier(database) };
+}
+
+export const CLUSTER_MARKER = "cornerops_disposable_cluster";
+const MANAGED_ROLES = ["supabase_admin", "supabase_auth_admin", "rdsadmin", "rds_superuser", "cloudsqladmin", "cloudsqlsuperuser", "azure_superuser", "azure_pg_admin", "alloydbadmin"];
+
+export interface ServerFacts {
+  /** inet_server_addr() as seen by the server (null for a Unix socket). Informational only. */
+  serverAddress: string | null;
+  hasClusterMarker: boolean;
+  managedRoles: string[];
+}
+
+/** Pure decision on facts gathered from the server (unit-tested). */
+export function assertDisposableServer(facts: ServerFacts): void {
+  if (facts.managedRoles.length) {
+    throw new UnsafeTestDatabaseError(`server looks like a managed/hosted database (roles: ${facts.managedRoles.join(", ")})`);
+  }
+  if (!facts.hasClusterMarker) {
+    throw new UnsafeTestDatabaseError(
+      `server${facts.serverAddress ? ` (${facts.serverAddress})` : ""} has no "${CLUSTER_MARKER}" ownership marker — ` +
+        "a loopback address is not proof of a disposable server (start the project cluster with scripts/db/local.sh)",
+    );
+  }
+}
+
+type Query = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Record<string, unknown>[]>;
+
+/** Gather server facts over an existing (admin) connection and apply assertDisposableServer. Read-only. */
+export async function verifyDisposableServer(sql: Query): Promise<ServerFacts> {
+  const [r] = await sql`
+    select host(inet_server_addr()) as addr,
+           exists (select 1 from pg_database where datname = ${CLUSTER_MARKER}) as marker,
+           coalesce((select array_agg(rolname order by rolname) from pg_roles where rolname = any (${MANAGED_ROLES})), '{}') as managed`;
+  const facts: ServerFacts = { serverAddress: (r.addr as string) ?? null, hasClusterMarker: Boolean(r.marker), managedRoles: (r.managed as string[]) ?? [] };
+  assertDisposableServer(facts);
+  return facts;
 }

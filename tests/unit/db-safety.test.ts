@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertDisposableTestDatabase, quoteIdentifier, UnsafeTestDatabaseError } from "../support/db-safety";
+import { assertDisposableServer, assertDisposableTestDatabase, quoteIdentifier, UnsafeTestDatabaseError } from "../support/db-safety";
 
 const OK_ENV = { CORNEROPS_TEST_DB_DISPOSABLE: "1" };
 const ok = (url: string, env: Record<string, string | undefined> = OK_ENV) => assertDisposableTestDatabase(url, env);
@@ -46,5 +46,20 @@ describe("destructive test database guard", () => {
   it("refuses a missing URL and quotes only safe identifiers", () => {
     expect(() => assertDisposableTestDatabase(undefined, OK_ENV)).toThrow();
     expect(() => quoteIdentifier('cornerops_test"; drop')).toThrow();
+  });
+});
+
+describe("server ownership check (a loopback address is not proof)", () => {
+  it("refuses a loopback-reachable server without the ownership marker (e.g. a tunnel to a hosted database)", () => {
+    expect(() => assertDisposableServer({ serverAddress: "10.0.4.17", hasClusterMarker: false, managedRoles: [] })).toThrow(UnsafeTestDatabaseError);
+    expect(() => assertDisposableServer({ serverAddress: "127.0.0.1", hasClusterMarker: false, managedRoles: [] })).toThrow(/ownership marker/);
+  });
+  it("refuses managed-service fingerprints even when a marker exists", () => {
+    expect(() => assertDisposableServer({ serverAddress: "127.0.0.1", hasClusterMarker: true, managedRoles: ["supabase_admin"] })).toThrow(/managed/);
+    expect(() => assertDisposableServer({ serverAddress: "127.0.0.1", hasClusterMarker: true, managedRoles: ["rdsadmin"] })).toThrow(/managed/);
+  });
+  it("accepts the project cluster / CI service container", () => {
+    expect(() => assertDisposableServer({ serverAddress: "127.0.0.1", hasClusterMarker: true, managedRoles: [] })).not.toThrow();
+    expect(() => assertDisposableServer({ serverAddress: "172.18.0.2", hasClusterMarker: true, managedRoles: [] })).not.toThrow();
   });
 });
