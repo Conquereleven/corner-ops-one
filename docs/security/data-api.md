@@ -19,7 +19,7 @@ may do anyway:
 
 | Surface | `anon` | `authenticated` |
 |---|---|---|
-| Tables in `public` | no privileges | RLS-filtered reads; finance-only columns hidden by column privileges; no writes to orders, items, tickets, customers, inventory, movements, shortfalls, metrics or audit |
+| Tables in `public` | no privileges | RLS-filtered reads; finance-only columns hidden by column privileges; no writes to orders, items, tickets, customers, inventory, movements, shortfalls, metrics, events or audit |
 | Configuration tables (menu, mappings, connections, locations, settings, memberships) | — | writes limited by RLS to the permission matrix; audited by database triggers |
 | `public` functions (RPC) | none executable | only the operations listed in `docs/security/rls.md`, each re-checking role and location |
 | `private`, `auth`, `cornerops_internal` schemas | not exposed | not exposed (must stay out of "Exposed schemas") |

@@ -3,7 +3,12 @@
 ## Domain events (transactional outbox)
 
 `public.domain_events` is written **in the same transaction** as the change that produced the
-event (see `src/server/repositories/events.ts`). If the change rolls back, so does the event —
+event. **Clients cannot insert events.** They come only from validated sources: the database
+operations (orders, inventory, shortfalls), trusted server connections (ingestion, simulator,
+demo reset — `src/server/repositories/events.ts`), and configuration triggers that derive the
+event from the actual row change (`private.emit_config_event`; no change, no event). Every
+insert has `processed_at`, `attempts`, `last_error` and `created_at` reset, and the actor pinned
+to the signed-in user when one is acting. If the change rolls back, so does the event —
 verified by `tests/integration/order-lifecycle.test.ts › event and audit atomicity`.
 
 ```ts
@@ -20,11 +25,11 @@ interface DomainEvent<T> {
 | `inventory.adjusted` | `record_inventory_movement()` |
 | `inventory.low` · `inventory.out_of_stock` | movements, order acceptance or shortfall reconciliation crossing the threshold |
 | `inventory.shortfall` · `inventory.shortfall_resolved` | order acceptance with insufficient stock; explicit resolution (see `docs/inventory-shortage-policy.md`) |
-| `menu.item_updated` · `menu.availability_changed` · `menu.publish_requested` | menu edits, publish requests |
-| `channel.connected` · `channel.disconnected` · `channel.degraded` | connection actions, simulated incidents |
-| `location.updated` | location edits/creation |
-| `membership.invited` · `membership.updated` | team management |
-| `settings.updated` | organization settings |
+| `menu.item_updated` · `menu.availability_changed` · `menu.publish_requested` | triggers on `menu_items` / `menu_channel_mappings` (status → pending) |
+| `channel.connected` · `channel.disconnected` · `channel.degraded` | trigger on `channel_connections` status changes (staff actions and simulated incidents) |
+| `location.updated` | trigger on `locations` |
+| `membership.invited` · `membership.updated` | triggers on `organization_memberships` |
+| `settings.updated` | trigger on `organization_settings` (changed sections) |
 | `demo.reset` | Demo Workspace reset |
 
 Rows are immutable (trigger, every column) except the outbox processing columns
@@ -59,7 +64,9 @@ INSERT privilege on `audit_logs`):
 | `inventory.shortfall`, `inventory.shortfall_resolved` | order acceptance; `resolve_order_shortfall` (lines before/after, method, note) |
 | `menu.item.created/updated/deleted`, `menu.availability_changed`, `menu.category.*`, `menu.recipe.*` | triggers on menu tables |
 | `channel.connection_changed`, `channel.credentials_changed`, `channel.connection.*` | trigger on `channel_connections` (telemetry columns ignored) |
-| `membership.invited`, `membership.accepted`, `membership.role_changed`, `membership.disabled`, `membership.enabled`, `membership.removed`, `membership.location_granted`, `membership.location_revoked` | triggers on memberships and location grants |
+| `membership.invited`, `membership.accepted`, `membership.role_changed`, `membership.disabled`, `membership.enabled`, `membership.removed` | trigger on memberships |
+| `membership.location_granted`, `membership.location_changed`, `membership.location_revoked` | trigger on location grants (INSERT/UPDATE/DELETE): complete previous/new grant, membership, user and role; clients cannot UPDATE grants |
+| `membership.quarantined` | registration of a shared demo identity disabling a legacy production membership/invitation |
 | `organization.created`, `organization.updated`, `settings.updated`, `restaurant.*`, `location.created`, `location.updated` | `create_organization`; triggers |
 | `demo.reset` | Demo Workspace reset (server) |
 

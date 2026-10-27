@@ -29,12 +29,16 @@ suppress audit entries. `tests/integration/adversarial-sql.test.ts` exercises th
 
 Only `status = 'active'` memberships grant access. Disabling a membership revokes access on the next request.
 
+All helpers derive from `private.effective_memberships()`: active memberships of `auth.uid()`,
+**excluding a registered demo identity's memberships outside demo organizations** — whatever rows
+exist (e.g. left over from a v0.2.0 database).
+
 ## Write model (v0.2.1)
 
 Clients (`authenticated`) have **no INSERT/UPDATE/DELETE privilege** on `orders`, `order_items`,
 `kitchen_tickets`, `customers`, `inventory_items`, `inventory_movements`,
-`order_inventory_shortfalls`, `daily_metrics`, `audit_logs`, and no UPDATE/DELETE on
-`domain_events`. Those changes happen only through narrow `SECURITY DEFINER` operations that
+`order_inventory_shortfalls`, `daily_metrics`, `audit_logs`, `domain_events`, and no UPDATE on
+`membership_locations` (grants are inserted or deleted, each audited). Those changes happen only through narrow `SECURITY DEFINER` operations that
 re-check role, location and business rules under row locks:
 
 | Operation | Who | What it guarantees |
@@ -43,7 +47,7 @@ re-check role, location and business rules under row locks:
 | `record_inventory_movement(item, type, qty, note, target)` | OWNER/ADMIN/OPS/BRANCH at the location(s) | validation, deadlock-free locking (id order), never negative, transfer pairs, movement + event + audit |
 | `resolve_order_shortfall(order, method, note)` | OWNER/ADMIN/OPS/BRANCH at the location | explicit reconciliation or accepted shortfall (note required), audit before/after |
 | `apply_order_inventory_usage(order)` | members at the location | idempotent reprocessing of recipe consumption; refused unless the order is accepted |
-| `record_channel_activity(conn, ok)` | members at the location | channel telemetry only |
+| `record_channel_activity(conn, ok)` | verified members at the location | channel telemetry only; identity-less client sessions are refused |
 | `create_organization(…)` / `claim_pending_invitations()` | signed-in, non-demo identities | onboarding (records `organization.created`); invitation claim for a confirmed email |
 | `financial_*` (see below) / `demo_feed(org, n)` | finance roles / demo members | read-only |
 
@@ -119,7 +123,10 @@ row to reference a parent in another organization, or an order/item at another l
 ## Demo Workspace isolation
 
 - Demo identities cannot hold a membership in, be invited to, or create a non-demo
-  organization — enforced by trigger even for server connections.
+  organization — enforced by trigger even for server connections. Memberships they already hold
+  (legacy data) never count (`effective_memberships`) and are quarantined on registration:
+  disabled, recorded in `demo_identity_quarantine` and audited, never deleted. Sessions using
+  the configured demo email are registered before their identity is resolved.
 - Client roles cannot add, change or remove memberships (or location grants) of a demo
   organization, and cannot change any demo organization.
 - `is_demo` can only be set by the server. Demo reset restores other members with their
@@ -139,6 +146,8 @@ after it commits.
 `tests/support/db-safety.ts`):
 
 - `tenant-isolation`, `location-and-roles` — cross-tenant / cross-location reads and writes.
+- `legacy-upgrade` — real v0.2.0 database upgraded through the audited commit and this release.
+- `event-and-grant-audit` — event fabrication, processing-state tampering, grant audit, telemetry identity.
 - `adversarial-sql` — direct SQL as each role: state machine, money, stock, audit forging and
   suppression, financial columns and functions, tenant FKs, demo isolation, event immutability.
 - `inventory-integrity`, `inventory-shortfall` — lifecycle, idempotency, concurrency, shortage policy.

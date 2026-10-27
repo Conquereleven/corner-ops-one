@@ -43,7 +43,8 @@ npm run dev                           # http://localhost:3000
 | `npm test` | Unit + integration tests (Vitest) against a freshly migrated local Postgres |
 | `npm run db:local:start` · `db:local:stop` · `db:local:reset` | Manage the project-local Postgres |
 | `npm run db:migrate` | Apply pending migrations to `DATABASE_URL` (from `.env.local`) |
-| `npm run db:migrate:deploy` | Same, using platform environment variables (Railway pre-deploy) |
+| `npm run db:migrate:status` | Read-only migration plan (pending / changed) for `MIGRATION_DATABASE_URL` |
+| `npm run db:migrate:deploy` | Gated hosted migration (`MIGRATION_DATABASE_URL` + `MIGRATION_CONFIRM`; never run on deploy) — see [docs/deployment/railway.md](docs/deployment/railway.md) |
 | `npm run db:seed:demo [-- --fixtures]` | Seed the Demo Workspace (and local fixture tenant) |
 | `npm run db:verify` | Run the database integration suite |
 
@@ -171,7 +172,7 @@ other target — see `tests/support/db-safety.ts`), seeds the Demo Workspace plu
 and covers tenant isolation, location access, role restrictions, adversarial SQL as each role,
 order lifecycle persistence, idempotency and concurrency, the shortage policy, financial
 privacy, event/audit atomicity and immutability, demo isolation/reset, migrations, readiness
-and configuration guards. Current result: **30 unit + 85 integration tests passing**.
+and configuration guards. Current result: **50 unit + 98 integration tests passing**. The destructive suite also requires the target server to carry the `cornerops_disposable_cluster` ownership marker (created automatically by `scripts/db/local.sh`).
 
 ## What remains simulated
 
