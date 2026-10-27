@@ -16,6 +16,10 @@ CornerOps One is a product of **CornerTech AI**. Proprietary and confidential �
 
 ---
 
+## Governance and engineering acceptance
+
+CornerOps One follows [Execution Standard 1.0](docs/governance/execution-standard.md) for accountability, evidence and closure, and [CT-WCOS v1.0](docs/governance/world-class-operating-standard.md) for design, engineering, product and AI quality **once the adoption PR has passed independent review and received separate Founder merge approval**. Prior to that, these files are a governance proposal, not an adopted production policy. Local v0.2.1 security acceptance is **GO WITH CONDITIONS**; hosted staging remains **NO-GO**.
+
 ## Quick start (local)
 
 Requirements: Node ≥ 20.9 and PostgreSQL 17 binaries on `PATH` (`initdb`, `pg_ctl`, `psql`). No Docker needed.
@@ -194,5 +198,6 @@ and configuration guards. Current result: **50 unit + 98 integration tests passi
 
 ## License and ownership
 
-Copyright © CornerTech AI. All rights reserved. This repository is private; no license is
-granted to use, copy or distribute it.
+Copyright © CornerTech AI. All rights reserved. This repository is temporarily public under a Founder-approved exception through
+2026-10-31, with return to private planned for 2026-11-01. Visibility does not grant
+any license to use, copy or distribute this proprietary software.
